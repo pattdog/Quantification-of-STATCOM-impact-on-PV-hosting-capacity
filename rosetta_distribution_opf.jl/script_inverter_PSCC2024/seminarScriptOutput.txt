@@ -1,4 +1,5 @@
-Network summary (pu, self-consistent):
+WARNING: redefinition of constant Main.WORST_BUSES. This may fail, cause incorrect answers, or produce other errors.
+  Network summary (pu, self-consistent):
     Buses        : 908
     Loads        : 52
     pd per load  : 1.0e-5 – 1.0e-5 pu
@@ -88,7 +89,7 @@ Network summary (pu, self-consistent):
     PV output / capacity  : 0.005973 / 0.0078 pu
     PV utilisation        : 76.6%  →  curtailment: 23.4%
 ┌ nothing | Warning ] : Assignment to `r3c_full` in soft scope is ambiguous because a global variable by the same name exists: `r3c_full` will be treated as a new local. Disambiguate by using `local r3c_full` to suppress this warning or `global r3c_full` to assign to the existing global variable.
-└ @ ~/thesis_STATCOM/rosetta_distribution_opf.jl/script_inverter_PSCC2024/seminarScript.jl:779
+└ @ ~/thesis_STATCOM/rosetta_distribution_opf.jl/script_inverter_PSCC2024/seminarScript.jl:904
 
 =======================================================
  CASE 3: STATCOM Hosting Capacity Study
