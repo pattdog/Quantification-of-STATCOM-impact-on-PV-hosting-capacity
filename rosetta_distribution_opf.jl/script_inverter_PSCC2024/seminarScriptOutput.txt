@@ -1,0 +1,642 @@
+Network summary (pu, self-consistent):
+    Buses        : 908
+    Loads        : 52
+    pd per load  : 1.0e-5 – 1.0e-5 pu
+    qd per load  : 3.29e-6 – 3.29e-6 pu
+    Total pd     : 0.00052 pu
+    Total qd     : 0.0001709 pu
+
+=======================================================
+ CASE 1: Natural Baseline (no bounds, no DER)
+=======================================================
+
+  [Baseline]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9766 / 0.9855 / 0.9997 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+
+=======================================================
+ CASE 2: PV Penetration Sweep (no bounds)
+ Natural voltage profile as PV penetration increases
+=======================================================
+
+  ── pv_scale = 1.0×pd ──
+  PV: 52 units  pv_scale=1.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV scale=1.0×pd  [no bounds]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0003 / 1.0263 / 1.0351 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.001562 / 0.00156 pu
+    PV utilisation        : 100.1%  →  curtailment: 0.0%
+
+  ── pv_scale = 2.0×pd ──
+  PV: 52 units  pv_scale=2.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV scale=2.0×pd  [no bounds]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0008 / 1.0632 / 1.0812 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.003122 / 0.00312 pu
+    PV utilisation        : 100.0%  →  curtailment: 0.0%
+
+  ── pv_scale = 3.0×pd ──
+  PV: 52 units  pv_scale=3.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV scale=3.0×pd  [no bounds]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0013 / 1.0978 / 1.1266 pu
+    Violations  > 1.10 pu : 1716 phases
+    Violations  < 0.90 pu : 0 phases
+    Worst overvoltage:
+      bus 189 → 1.1266 pu
+      bus 843 → 1.1264 pu
+      bus 256 → 1.1264 pu
+      bus 157 → 1.1263 pu
+      bus 611 → 1.1263 pu
+    PV output / capacity  : 0.004682 / 0.00468 pu
+    PV utilisation        : 100.0%  →  curtailment: 0.0%
+
+  ── pv_scale = 4.0×pd ──
+  PV: 52 units  pv_scale=4.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV scale=4.0×pd  [no bounds]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.001 / 1.1149 / 1.1668 pu
+    Violations  > 1.10 pu : 2113 phases
+    Violations  < 0.90 pu : 0 phases
+    Worst overvoltage:
+      bus 256 → 1.1668 pu
+      bus 157 → 1.1667 pu
+      bus 260 → 1.1665 pu
+      bus 280 → 1.1664 pu
+      bus 551 → 1.1664 pu
+    PV output / capacity  : 0.005732 / 0.00624 pu
+    PV utilisation        : 91.9%  →  curtailment: 8.1%
+
+  ── pv_scale = 5.0×pd ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV scale=5.0×pd  [no bounds]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0011 / 1.1187 / 1.1707 pu
+    Violations  > 1.10 pu : 2120 phases
+    Violations  < 0.90 pu : 0 phases
+    Worst overvoltage:
+      bus 189 → 1.1707 pu
+      bus 256 → 1.1706 pu
+      bus 157 → 1.1705 pu
+      bus 843 → 1.1703 pu
+      bus 260 → 1.1703 pu
+    PV output / capacity  : 0.005973 / 0.0078 pu
+    PV utilisation        : 76.6%  →  curtailment: 23.4%
+┌ nothing | Warning ] : Assignment to `r3c_full` in soft scope is ambiguous because a global variable by the same name exists: `r3c_full` will be treated as a new local. Disambiguate by using `local r3c_full` to suppress this warning or `global r3c_full` to assign to the existing global variable.
+└ @ ~/thesis_STATCOM/rosetta_distribution_opf.jl/script_inverter_PSCC2024/seminarScript.jl:779
+
+=======================================================
+ CASE 3: STATCOM Hosting Capacity Study
+ PV stress: 5.0×pd  |  bounds: 0.90–1.10 pu
+ PV cost: -1000.0  |  STATCOM cost: 1.0
+ Builder: PMD.build_mc_opf  |  Objective: cost (gen["cost"])
+=======================================================
+
+  ── 3a: PV only — hosting capacity baseline ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV only  [no STATCOM]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0 / 1.0889 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.005517 / 0.0078 pu
+    PV utilisation        : 70.7%  →  curtailment: 29.3%
+
+  ── 3b: STATCOM rating sweep (52 STATCOMs, spacing=1) ──
+
+  ── q_scale = 1×qd  (52 STATCOMs) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=1×qd  spacing=1  cost=1.0
+
+  [PV+STATCOM q=1×qd  52 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9995 / 1.0852 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.005716 / 0.0078 pu
+    PV utilisation        : 73.3%  →  curtailment: 26.7%
+    STATCOM Q / capacity  : -3.536e-5 / 0.0005127 pu
+    STATCOM utilisation   : 6.9%  absorbing ↓V
+      Phase A net Q: -7.47e-6 pu  ↓
+      Phase B net Q: -1.82e-5 pu  ↓
+      Phase C net Q: -9.71e-6 pu  ↓
+
+  ── q_scale = 2×qd  (52 STATCOMs) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=2×qd  spacing=1  cost=1.0
+
+  [PV+STATCOM q=2×qd  52 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9996 / 1.0853 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.005764 / 0.0078 pu
+    PV utilisation        : 73.9%  →  curtailment: 26.1%
+    STATCOM Q / capacity  : -8.15e-5 / 0.001025 pu
+    STATCOM utilisation   : 7.9%  absorbing ↓V
+      Phase A net Q: -2.77e-5 pu  ↓
+      Phase B net Q: -3.79e-5 pu  ↓
+      Phase C net Q: -1.59e-5 pu  ↓
+
+  ── q_scale = 5×qd  (52 STATCOMs) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=5×qd  spacing=1  cost=1.0
+
+  [PV+STATCOM q=5×qd  52 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9997 / 1.0862 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.005874 / 0.0078 pu
+    PV utilisation        : 75.3%  →  curtailment: 24.7%
+    STATCOM Q / capacity  : -0.0001091 / 0.002564 pu
+    STATCOM utilisation   : 4.3%  absorbing ↓V
+      Phase A net Q: -5.53e-5 pu  ↓
+      Phase B net Q: -5.35e-5 pu  ↓
+      Phase C net Q: -3.63e-7 pu  ↓
+
+  ── q_scale = 10×qd  (52 STATCOMs) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=10×qd  spacing=1  cost=1.0
+
+  [PV+STATCOM q=10×qd  52 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9993 / 1.0871 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.005892 / 0.0078 pu
+    PV utilisation        : 75.5%  →  curtailment: 24.5%
+    STATCOM Q / capacity  : -0.0001468 / 0.005127 pu
+    STATCOM utilisation   : 2.9%  absorbing ↓V
+      Phase A net Q: -0.000133 pu  ↓
+      Phase B net Q: -6.79e-5 pu  ↓
+      Phase C net Q: 5.4e-5 pu  ↑
+
+  ── q_scale = 20×qd  (52 STATCOMs) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=20×qd  spacing=1  cost=1.0
+
+  [PV+STATCOM q=20×qd  52 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9998 / 1.0868 / 1.1 pu
+    Violations  > 1.10 pu : 1 phases
+    Violations  < 0.90 pu : 0 phases
+    Worst overvoltage:
+      bus 157 → 1.1 pu
+    PV output / capacity  : 0.006238 / 0.0078 pu
+    PV utilisation        : 80.0%  →  curtailment: 20.0%
+    STATCOM Q / capacity  : -0.000177 / 0.01025 pu
+    STATCOM utilisation   : 1.7%  absorbing ↓V
+      Phase A net Q: -7.46e-5 pu  ↓
+      Phase B net Q: -0.000168 pu  ↓
+      Phase C net Q: 6.52e-5 pu  ↑
+
+  ── q_scale = 50×qd  (52 STATCOMs) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=50×qd  spacing=1  cost=1.0
+
+  [PV+STATCOM q=50×qd  52 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9996 / 1.0857 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.006776 / 0.0078 pu
+    PV utilisation        : 86.9%  →  curtailment: 13.1%
+    STATCOM Q / capacity  : -0.0003396 / 0.02564 pu
+    STATCOM utilisation   : 1.3%  absorbing ↓V
+      Phase A net Q: -0.000302 pu  ↓
+      Phase B net Q: -0.000146 pu  ↓
+      Phase C net Q: 0.000109 pu  ↑
+
+  ── q_scale = 100×qd  (52 STATCOMs) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=100×qd  spacing=1  cost=1.0
+
+  [PV+STATCOM q=100×qd  52 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9985 / 1.0825 / 1.1 pu
+    Violations  > 1.10 pu : 4 phases
+    Violations  < 0.90 pu : 0 phases
+    Worst overvoltage:
+      bus 256 → 1.1 pu
+      bus 219 → 1.1 pu
+      bus 219 → 1.1 pu
+      bus 316 → 1.1 pu
+    PV output / capacity  : 0.007587 / 0.0078 pu
+    PV utilisation        : 97.3%  →  curtailment: 2.7%
+    STATCOM Q / capacity  : -0.001141 / 0.05127 pu
+    STATCOM utilisation   : 2.2%  absorbing ↓V
+      Phase A net Q: -0.000299 pu  ↓
+      Phase B net Q: -0.000712 pu  ↓
+      Phase C net Q: -0.00013 pu  ↓
+
+  ── q_scale = 200×qd  (52 STATCOMs) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=200×qd  spacing=1  cost=1.0
+
+  [PV+STATCOM q=200×qd  52 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0002 / 1.0874 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.007802 / 0.0078 pu
+    PV utilisation        : 100.0%  →  curtailment: 0.0%
+    STATCOM Q / capacity  : 0.0004436 / 0.1025 pu
+    STATCOM utilisation   : 0.4%  injecting ↑V
+      Phase A net Q: -0.000116 pu  ↓
+      Phase B net Q: 0.000397 pu  ↑
+      Phase C net Q: 0.000163 pu  ↑
+
+  ── q_scale = 500×qd  (52 STATCOMs) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=500×qd  spacing=1  cost=1.0
+
+  [PV+STATCOM q=500×qd  52 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0002 / 1.0878 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.007802 / 0.0078 pu
+    PV utilisation        : 100.0%  →  curtailment: 0.0%
+    STATCOM Q / capacity  : 0.0001654 / 0.2564 pu
+    STATCOM utilisation   : 0.1%  injecting ↑V
+      Phase A net Q: -0.000259 pu  ↓
+      Phase B net Q: 0.000145 pu  ↑
+      Phase C net Q: 0.000279 pu  ↑
+  → Saved: ./plots/rating_sweep.pdf
+
+  ── 3c: Density sweep at q_scale=100×qd ──
+        How few STATCOMs achieve the same hosting benefit?
+
+  ── spacing=1 → ~52 STATCOMs ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=100×qd  spacing=1  cost=1.0
+
+  [PV+STATCOM q=100×qd  52 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9985 / 1.0825 / 1.1 pu
+    Violations  > 1.10 pu : 4 phases
+    Violations  < 0.90 pu : 0 phases
+    Worst overvoltage:
+      bus 256 → 1.1 pu
+      bus 219 → 1.1 pu
+      bus 219 → 1.1 pu
+      bus 316 → 1.1 pu
+    PV output / capacity  : 0.007587 / 0.0078 pu
+    PV utilisation        : 97.3%  →  curtailment: 2.7%
+    STATCOM Q / capacity  : -0.001141 / 0.05127 pu
+    STATCOM utilisation   : 2.2%  absorbing ↓V
+      Phase A net Q: -0.000299 pu  ↓
+      Phase B net Q: -0.000712 pu  ↓
+      Phase C net Q: -0.00013 pu  ↓
+
+  ── spacing=2 → ~26 STATCOMs ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 26 units  q_scale=100×qd  spacing=2  cost=1.0
+
+  [PV+STATCOM q=100×qd  26 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9992 / 1.0857 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.006846 / 0.0078 pu
+    PV utilisation        : 87.8%  →  curtailment: 12.2%
+    STATCOM Q / capacity  : -0.0006063 / 0.02564 pu
+    STATCOM utilisation   : 2.4%  absorbing ↓V
+      Phase A net Q: 0.000234 pu  ↑
+      Phase B net Q: -0.000183 pu  ↓
+      Phase C net Q: -0.000657 pu  ↓
+
+  ── spacing=4 → ~13 STATCOMs ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 13 units  q_scale=100×qd  spacing=4  cost=1.0
+
+  [PV+STATCOM q=100×qd  13 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9993 / 1.0866 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.006356 / 0.0078 pu
+    PV utilisation        : 81.5%  →  curtailment: 18.5%
+    STATCOM Q / capacity  : -0.0001781 / 0.01282 pu
+    STATCOM utilisation   : 1.4%  absorbing ↓V
+      Phase A net Q: -1.41e-5 pu  ↓
+      Phase B net Q: 0.00082 pu  ↑
+      Phase C net Q: -0.000984 pu  ↓
+
+  ── spacing=6 → ~9 STATCOMs ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 9 units  q_scale=100×qd  spacing=6  cost=1.0
+
+  [PV+STATCOM q=100×qd  9 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9998 / 1.0871 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.006068 / 0.0078 pu
+    PV utilisation        : 77.8%  →  curtailment: 22.2%
+    STATCOM Q / capacity  : -0.0003367 / 0.008874 pu
+    STATCOM utilisation   : 3.8%  absorbing ↓V
+      Phase A net Q: -0.000337 pu  ↓
+      Phase B net Q: -0.000329 pu  ↓
+      Phase C net Q: 0.000329 pu  ↑
+
+  ── spacing=8 → ~7 STATCOMs ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 7 units  q_scale=100×qd  spacing=8  cost=1.0
+
+  [PV+STATCOM q=100×qd  7 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9999 / 1.0883 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.006177 / 0.0078 pu
+    PV utilisation        : 79.2%  →  curtailment: 20.8%
+    STATCOM Q / capacity  : -0.001082 / 0.006902 pu
+    STATCOM utilisation   : 15.7%  absorbing ↓V
+      Phase A net Q: -0.000115 pu  ↓
+      Phase B net Q: -0.000638 pu  ↓
+      Phase C net Q: -0.000329 pu  ↓
+
+  ── spacing=10 → ~6 STATCOMs ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 6 units  q_scale=100×qd  spacing=10  cost=1.0
+
+  [PV+STATCOM q=100×qd  6 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9993 / 1.087 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.00603 / 0.0078 pu
+    PV utilisation        : 77.3%  →  curtailment: 22.7%
+    STATCOM Q / capacity  : -0.0003605 / 0.005916 pu
+    STATCOM utilisation   : 6.1%  absorbing ↓V
+      Phase A net Q: -0.000657 pu  ↓
+      Phase B net Q: 1.53e-5 pu  ↑
+      Phase C net Q: 0.000282 pu  ↑
+  → Saved: ./plots/density_sweep.pdf
+
+  ΔHC Summary Table
+  ────────────────────────────────────────────────────────────────────────
+  Configuration                       Util (%)   Curtail (%)     ΔHC vs base
+  ────────────────────────────────────────────────────────────────────────
+  No STATCOM (baseline)                  70.7%         29.3%               —
+  STATCOM 1×qd (52 units)                73.3%         26.7%         +2.6 pp
+  STATCOM 2×qd (52 units)                73.9%         26.1%         +3.2 pp
+  STATCOM 5×qd (52 units)                75.3%         24.7%         +4.6 pp
+  STATCOM 10×qd (52 units)               75.5%         24.5%         +4.8 pp
+  STATCOM 20×qd (52 units)               80.0%         20.0%         +9.3 pp
+  STATCOM 50×qd (52 units)               86.9%         13.1%        +16.1 pp
+  STATCOM 100×qd (52 units)              97.3%          2.7%        +26.5 pp
+  STATCOM 200×qd (52 units)             100.0%         -0.0%        +29.3 pp
+  STATCOM 500×qd (52 units)             100.0%         -0.0%        +29.3 pp
+  ────────────────────────────────────────────────────────────────────────
+
+=======================================================
+ CASE 4: HC Curve — STATCOM vs No-STATCOM
+ PV scales 1–5×pd  |  bounds enforced
+ STATCOM: 100×qd, 52 units, spacing=1
+=======================================================
+
+  ── pv_scale = 1.0×pd ──
+  PV: 52 units  pv_scale=1.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV 1.0×  [no STATCOM]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0003 / 1.0263 / 1.0351 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.001562 / 0.00156 pu
+    PV utilisation        : 100.1%  →  curtailment: 0.0%
+  PV: 52 units  pv_scale=1.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=100×qd  spacing=1  cost=1.0
+
+  [PV 1.0× + STATCOM 100×qd]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0003 / 1.0264 / 1.0352 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.001562 / 0.00156 pu
+    PV utilisation        : 100.1%  →  curtailment: 0.0%
+    STATCOM Q / capacity  : 0.0001795 / 0.05127 pu
+    STATCOM utilisation   : 0.3%  injecting ↑V
+      Phase A net Q: 8.06e-5 pu  ↑
+      Phase B net Q: 3.63e-5 pu  ↑
+      Phase C net Q: 6.25e-5 pu  ↑
+
+  ── pv_scale = 2.0×pd ──
+  PV: 52 units  pv_scale=2.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV 2.0×  [no STATCOM]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0008 / 1.0632 / 1.0812 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.003122 / 0.00312 pu
+    PV utilisation        : 100.0%  →  curtailment: 0.0%
+  PV: 52 units  pv_scale=2.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=100×qd  spacing=1  cost=1.0
+
+  [PV 2.0× + STATCOM 100×qd]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0008 / 1.0632 / 1.0812 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.003122 / 0.00312 pu
+    PV utilisation        : 100.0%  →  curtailment: 0.0%
+    STATCOM Q / capacity  : 0.0002211 / 0.05127 pu
+    STATCOM utilisation   : 0.4%  injecting ↑V
+      Phase A net Q: 9.26e-5 pu  ↑
+      Phase B net Q: 5.17e-5 pu  ↑
+      Phase C net Q: 7.67e-5 pu  ↑
+
+  ── pv_scale = 3.0×pd ──
+  PV: 52 units  pv_scale=3.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV 3.0×  [no STATCOM]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9984 / 1.0807 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.004682 / 0.00468 pu
+    PV utilisation        : 100.0%  →  curtailment: 0.0%
+  PV: 52 units  pv_scale=3.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=100×qd  spacing=1  cost=1.0
+
+  [PV 3.0× + STATCOM 100×qd]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9988 / 1.0822 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.004682 / 0.00468 pu
+    PV utilisation        : 100.0%  →  curtailment: 0.0%
+    STATCOM Q / capacity  : -0.001393 / 0.05127 pu
+    STATCOM utilisation   : 2.7%  absorbing ↓V
+      Phase A net Q: -0.000453 pu  ↓
+      Phase B net Q: -0.000496 pu  ↓
+      Phase C net Q: -0.000444 pu  ↓
+
+  ── pv_scale = 4.0×pd ──
+  PV: 52 units  pv_scale=4.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV 4.0×  [no STATCOM]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9988 / 1.0862 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.005288 / 0.00624 pu
+    PV utilisation        : 84.7%  →  curtailment: 15.3%
+  PV: 52 units  pv_scale=4.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=100×qd  spacing=1  cost=1.0
+
+  [PV 4.0× + STATCOM 100×qd]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9993 / 1.0877 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.006242 / 0.00624 pu
+    PV utilisation        : 100.0%  →  curtailment: 0.0%
+    STATCOM Q / capacity  : -0.0005694 / 0.05127 pu
+    STATCOM utilisation   : 1.1%  absorbing ↓V
+      Phase A net Q: -0.000337 pu  ↓
+      Phase B net Q: -0.000228 pu  ↓
+      Phase C net Q: -4.29e-6 pu  ↓
+
+  ── pv_scale = 5.0×pd ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV 5.0×  [no STATCOM]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0 / 1.0889 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.005517 / 0.0078 pu
+    PV utilisation        : 70.7%  →  curtailment: 29.3%
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=100×qd  spacing=1  cost=1.0
+
+  [PV 5.0× + STATCOM 100×qd]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9985 / 1.0825 / 1.1 pu
+    Violations  > 1.10 pu : 4 phases
+    Violations  < 0.90 pu : 0 phases
+    Worst overvoltage:
+      bus 256 → 1.1 pu
+      bus 219 → 1.1 pu
+      bus 219 → 1.1 pu
+      bus 316 → 1.1 pu
+    PV output / capacity  : 0.007587 / 0.0078 pu
+    PV utilisation        : 97.3%  →  curtailment: 2.7%
+    STATCOM Q / capacity  : -0.001141 / 0.05127 pu
+    STATCOM utilisation   : 2.2%  absorbing ↓V
+      Phase A net Q: -0.000299 pu  ↓
+      Phase B net Q: -0.000712 pu  ↓
+      Phase C net Q: -0.00013 pu  ↓
+  → Saved: ./plots/hc_curve.pdf
+
+  HC Curve Summary:
+  Scale     No STATCOM    With STATCOM    ΔHC
+  ──────────────────────────────────────────────────
+  1.0×pd    100.1%        100.1%          +-0.0 pp
+  2.0×pd    100.0%        100.0%          +-0.0 pp
+  3.0×pd    100.0%        100.0%          +0.0 pp
+  4.0×pd    84.7%         100.0%          +15.3 pp
+  5.0×pd    70.7%         97.3%           +26.5 pp
+
+=======================================================
+ CASE 5: Targeted vs Uniform Placement
+ Both: 5 units, 100×qd rating
+ Targeted buses: [189, 256, 157, 843, 260]
+=======================================================
+
+  ── 5a: No STATCOM reference ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [No STATCOM reference]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0 / 1.0889 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.005517 / 0.0078 pu
+    PV utilisation        : 70.7%  →  curtailment: 29.3%
+
+  ── 5b: Uniform (spacing=10, ~5 units) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 6 units  q_scale=100×qd  spacing=10  cost=1.0
+
+  [Uniform  ~5 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9993 / 1.087 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.00603 / 0.0078 pu
+    PV utilisation        : 77.3%  →  curtailment: 22.7%
+    STATCOM Q / capacity  : -0.0003605 / 0.005916 pu
+    STATCOM utilisation   : 6.1%  absorbing ↓V
+      Phase A net Q: -0.000657 pu  ↓
+      Phase B net Q: 1.53e-5 pu  ↑
+      Phase C net Q: 0.000282 pu  ↑
+
+  ── 5c: Targeted at worst-voltage buses ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 5 units  TARGETED buses=[189, 256, 157, 843, 260]  q_scale=100×qd_mean  cost=1.0
+
+  [Targeted  5 units]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9999 / 1.0863 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.006153 / 0.0078 pu
+    PV utilisation        : 78.9%  →  curtailment: 21.1%
+    STATCOM Q / capacity  : -0.00313 / 0.00493 pu
+    STATCOM utilisation   : 63.5%  absorbing ↓V
+      Phase A net Q: -0.000329 pu  ↓
+      Phase B net Q: -0.0015 pu  ↓
+      Phase C net Q: -0.0013 pu  ↓
+  → Saved: ./plots/placement_compare.pdf
+
+  Placement summary:
+  No STATCOM                      70.7%
+  Uniform (~5 units)              77.3%  (Δ = +6.6 pp)
+  Targeted (5 units)              78.9%  (Δ = +8.2 pp)
+
+=======================================================
+ CASE 6: HC Decomposition — Inverter Q vs STATCOM Q
+ PV stress: 5.0×pd  |  bounds enforced
+=======================================================
+
+  ── 6a: PV active-only (Q disabled) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [PV active-only  [Q = 0]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0009 / 1.0878 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.004805 / 0.0078 pu
+    PV utilisation        : 61.6%  →  curtailment: 38.4%
+
+  ── 6b: Smart inverter only (Q enabled, no STATCOM) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+
+  [Smart inverter only  [no STATCOM]]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 1.0 / 1.0889 / 1.1 pu
+    Violations  > 1.10 pu : 0 phases
+    Violations  < 0.90 pu : 0 phases
+    PV output / capacity  : 0.005517 / 0.0078 pu
+    PV utilisation        : 70.7%  →  curtailment: 29.3%
+
+  ── 6c: Smart inverter + STATCOM (100×qd, 52 units) ──
+  PV: 52 units  pv_scale=5.0×pd  q_scale=1.25  spacing=1  cost=-1000.0
+  STATCOM: 52 units  q_scale=100×qd  spacing=1  cost=1.0
+
+  [Smart inverter + STATCOM 100×qd]  →  LOCALLY_SOLVED
+    Voltage min/mean/max  : 0.9985 / 1.0825 / 1.1 pu
+    Violations  > 1.10 pu : 4 phases
+    Violations  < 0.90 pu : 0 phases
+    Worst overvoltage:
+      bus 256 → 1.1 pu
+      bus 219 → 1.1 pu
+      bus 219 → 1.1 pu
+      bus 316 → 1.1 pu
+    PV output / capacity  : 0.007587 / 0.0078 pu
+    PV utilisation        : 97.3%  →  curtailment: 2.7%
+    STATCOM Q / capacity  : -0.001141 / 0.05127 pu
+    STATCOM utilisation   : 2.2%  absorbing ↓V
+      Phase A net Q: -0.000299 pu  ↓
+      Phase B net Q: -0.000712 pu  ↓
+      Phase C net Q: -0.00013 pu  ↓
+┌ Makie | Warning ] : `arrows` are deprecated in favor of `arrows2d` and `arrows3d`.
+└ @ Makie ~/.julia/packages/Makie/p9K7f/src/basic_recipes/arrows.jl:166
+┌ Makie | Warning ] : arrowsize has been deprecated in favor of tipwidth and tiplength.
+└ @ Makie ~/.julia/packages/Makie/p9K7f/src/basic_recipes/arrows.jl:206
+┌ Makie | Warning ] : `arrows` are deprecated in favor of `arrows2d` and `arrows3d`.
+└ @ Makie ~/.julia/packages/Makie/p9K7f/src/basic_recipes/arrows.jl:166
+┌ Makie | Warning ] : arrowsize has been deprecated in favor of tipwidth and tiplength.
+└ @ Makie ~/.julia/packages/Makie/p9K7f/src/basic_recipes/arrows.jl:206
+  → Saved: ./plots/decomposition.pdf
+
+  HC decomposition:
+  PV (Q = 0, no inverter Q)       : 61.6%
+  + Smart inverter Q              : 70.7%  → +9.1 pp  (inverter contribution)
+  + STATCOM on top of inverter    : 97.3%  → +26.5 pp  (STATCOM contribution)
+  Total ΔHC vs Q=0 baseline       : +35.7 pp
+
+  All plots saved to ./plots/
+  Done.
