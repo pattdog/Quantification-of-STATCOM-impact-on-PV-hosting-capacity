@@ -6,6 +6,7 @@ version = "0.1.0"
 [deps]
 AppleAccelerate = "13e28ba4-7ad8-5781-acae-3021b1ed3924"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 GraphPlot = "a2cc645c-3eea-5389-862e-a155d0052231"
 Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
@@ -30,6 +31,7 @@ StatsPlots = "f3b207a7-027a-5e70-b257-86293d7955fd"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
 [compat]
+CairoMakie = "0.15.10"
 JLD2 = "0.6.2"
 PlotlyJS = "0.18.17"
 Plots = "1.41.1"
