@@ -35,6 +35,10 @@
 #   Solver    : Ipopt
 #   Data      : ENWL 4w_Network1_Feeder1 (OpenDSS format)
 # ==============================================================================
+Sem 2 notes
+- this script treats pv as a 3 phase injection -> clear deviation from methodology of modelling UNBALANCED
+  PV injection
+- statcoms are also sized incorrectly
 =#
 
 using Pkg
@@ -61,7 +65,7 @@ ipopt_solver = JuMP.optimizer_with_attributes(
     "max_iter"              => 50000
 )
 
-data_path = "./data/ENWL_4w_Network1_Feeder1/Master.dss"
+data_path = "./rosetta_distribution_opf.jl/data/ENWL_4w_Network1_Feeder1/Master.dss"
 
 # ═══════════════════════════════════════════════════════════════
 # NETWORK LOADER  — unchanged
@@ -117,6 +121,39 @@ function summarise_network(data_math)
     println("    Total pd     : $(round(sum(pd_vals),sigdigits=4)) pu")
     println("    Total qd     : $(round(sum(qd_vals),sigdigits=4)) pu")
 end
+
+# ═══════════════════════════════════════════════════════════════
+# ADD: base-value extraction — run once after parsing data_eng
+# ═══════════════════════════════════════════════════════════════
+function get_base_values(data_eng, data_math)
+    sbase_kva = data_math["settings"]["sbase"] * data_math["settings"]["power_scale_factor"] / 1000
+    # ^ verify against your PMD version: power_scale_factor is usually 1000 (W<->kW)
+    #   so sbase_kva ends up in kVA. Sanity check below.
+
+    vbases, _ = PMD.calc_voltage_bases(data_eng, data_eng["settings"]["vbases_default"])
+    # vbases: Dict{String,Float64} eng bus name => kV (line-to-line)
+
+    # map math bus id -> eng bus name, so we can look up vbase per math bus
+    busid2ebus = Dict(
+        string(bus["bus_i"]) => split(bus["source_id"], ".")[end]
+        for (i, bus) in data_math["bus"]
+    )
+
+    vbase_kv = Dict{String,Float64}()
+    for (mbus, ebus) in busid2ebus
+        if haskey(vbases, ebus)
+            vbase_kv[mbus] = vbases[ebus]
+        end
+    end
+
+    return sbase_kva, vbase_kv
+end
+pu_to_kw(p_pu, sbase_kva)   = p_pu * sbase_kva
+pu_to_kvar(q_pu, sbase_kva) = q_pu * sbase_kva
+pu_to_kv(v_pu, vbase_kv)    = v_pu * vbase_kv
+# sanity check once, right after computing:
+# total_pd_pu = sum(l["pd"][1] for (_,l) in data_math["load"])
+# println("Total load ≈ $(round(total_pd_pu*sbase_kva, digits=1)) kW — compare to known feeder rating")
 
 # ═══════════════════════════════════════════════════════════════
 # PV PLACEMENT  — unchanged
@@ -244,7 +281,7 @@ end
 # All solution extraction still uses result["solution"]["bus"]
 # and result["solution"]["gen"] exactly as in the original.
 # ═══════════════════════════════════════════════════════════════
-function solve_and_report(data_math, label)
+function solve_and_report(data_math, label; sbase_kva=SBASE_KVA, vbase_kv=VBASE_KV)
     PMD.add_start_vrvi!(data_math)
 
     model  = PMD.instantiate_mc_model(data_math, PMD.IVRENPowerModel, PMD.build_mc_opf)
@@ -290,6 +327,14 @@ function solve_and_report(data_math, label)
             n_under = count(v -> v < 0.90, vm_all)
 
             println("    Voltage min/mean/max  : $(round(v_min,digits=4)) / $(round(v_mean,digits=4)) / $(round(v_max,digits=4)) pu")
+            if !isnothing(vbase_kv)
+                v_min_bus = bus_labels[argmin(vm_all)]
+                v_max_bus = bus_labels[argmax(vm_all)]
+                if haskey(vbase_kv, v_min_bus) && haskey(vbase_kv, v_max_bus)
+                    println("    Voltage min/max (kV)  : $(round(pu_to_kv(v_min, vbase_kv[v_min_bus]),digits=3)) / " *
+                            "$(round(pu_to_kv(v_max, vbase_kv[v_max_bus]),digits=3)) kV")
+                end
+            end
             println("    Violations  > 1.10 pu : $n_over phases")
             println("    Violations  < 0.90 pu : $n_under phases")
 
@@ -321,6 +366,10 @@ function solve_and_report(data_math, label)
             pv_util     = pv_output / max(1e-9, pv_capacity) * 100
             pv_curtail  = max(0.0, 100.0 - pv_util)
             println("    PV output / capacity  : $(round(pv_output,sigdigits=4)) / $(round(pv_capacity,sigdigits=4)) pu")
+            if !isnothing(sbase_kva)
+                println("    PV output / capacity  : $(round(pu_to_kw(pv_output,sbase_kva),digits=1)) / " *
+                        "$(round(pu_to_kw(pv_capacity,sbase_kva),digits=1)) kW")
+            end
             println("    PV utilisation        : $(round(pv_util,digits=1))%  →  curtailment: $(round(pv_curtail,digits=1))%")
         end
 
@@ -334,6 +383,10 @@ function solve_and_report(data_math, label)
             st_util    = abs(st_q_total) / max(1e-9, st_q_cap) * 100
             direction  = st_q_total >= 0 ? "injecting ↑V" : "absorbing ↓V"
             println("    STATCOM Q / capacity  : $(round(st_q_total,sigdigits=4)) / $(round(st_q_cap,sigdigits=4)) pu")
+            if !isnothing(sbase_kva)
+                println("    STATCOM Q / capacity  : $(round(pu_to_kvar(st_q_total,sbase_kva),digits=1)) / " *
+                        "$(round(pu_to_kvar(st_q_cap,sbase_kva),digits=1)) kVAr")
+            end
             println("    STATCOM utilisation   : $(round(st_util,digits=1))%  $(direction)")
 
             # ADD: per-phase Q breakdown — reveals phase imbalance in compensation
@@ -369,6 +422,8 @@ function solve_and_report(data_math, label)
         st_q_cap    = st_q_cap,
         st_util     = st_util,
         vm_per_bus  = vm_per_bus,
+        pv_output_kw    = isnothing(sbase_kva) ? NaN : pu_to_kw(pv_output, sbase_kva),
+        st_q_total_kvar = isnothing(sbase_kva) ? NaN : pu_to_kvar(st_q_total, sbase_kva),
     )
 end
 
@@ -815,9 +870,9 @@ end
 do_case1 = true
 do_case2 = true
 do_case3 = true
-do_case4 = true   # ADD: HC curve across penetration levels
+do_case4 = false   # ADD: HC curve across penetration levels
 do_case5 = true   # ADD: targeted vs uniform placement
-do_case6 = true   # ADD: inverter Q vs STATCOM Q decomposition
+do_case6 = false   # ADD: inverter Q vs STATCOM Q decomposition
 
 const STRESS_SCALE = 5.0
 const PV_COST      = -1000.0
@@ -827,8 +882,12 @@ const BEST_Q_SCALE = 100    # practical saturation point from Case 3b
 # Worst-voltage buses from Case 2 results — used for targeted placement
 const WORST_BUSES = [189, 256, 157, 843, 260]
 
+data_eng_ref = PMD.parse_file(data_path, transformations=[PMD.transform_loops!])
 dm_ref = load_base_network(data_path)
 summarise_network(dm_ref)
+
+SBASE_KVA, VBASE_KV = get_base_values(data_eng_ref, dm_ref)
+println("  Base values: sbase = $(round(SBASE_KVA,digits=1)) kVA")
 
 # ───────────────────────────────────────────────────────────────
 ## Case 1: Natural baseline — unchanged
@@ -901,8 +960,8 @@ if do_case3
         add_statcoms!(dm3c; q_scale=min_viable_q,  spacing=sp,    statcom_cost=STATCOM_COST)
         r = solve_and_report(dm3c, "PV+STATCOM q=$(min_viable_q)×qd  $(n_st) units")
         push!(density_results, (n_units=n_st, util=r.pv_util, st_util=r.st_util, baseline=r3a.pv_util))
-        sp == 1 && (r3c_full = r)
-    end
+        sp == 1 && (global r3c_full = r)
+        end
     plot_density_sweep(density_results)
 
     # Voltage profile: no STATCOM vs full-density 100×qd

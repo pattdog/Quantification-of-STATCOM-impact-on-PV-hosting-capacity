@@ -408,7 +408,7 @@ ipopt_solver = JuMP.optimizer_with_attributes(
     "max_iter"              => 50000
 )
 
-data_path = "./data/ENWL_4w_Network1_Feeder1/Master.dss"
+data_path = "./rosetta_distribution_opf.jl/data/ENWL_4w_Network1_Feeder1/Master.dss"
 
 # ═══════════════════════════════════════════════════════════════
 # NETWORK LOADER
@@ -455,15 +455,19 @@ end
 # NETWORK SUMMARY
 # ═══════════════════════════════════════════════════════════════
 function summarise_network(data_math)
-    pd_vals = [load["pd"][1] for (i, load) in data_math["load"]]
-    qd_vals = [load["qd"][1] for (i, load) in data_math["load"]]
-    println("  Network summary (pu, self-consistent):")
+    sbase = get(data_math["settings"], "sbase_default", 1000.0) # kW
+    pd_vals_pu = [load["pd"][1] for (i, load) in data_math["load"]]
+    qd_vals_pu = [load["qd"][1] for (i, load) in data_math["load"]]
+
+    pd_total_kw = sum(pd_vals_pu) * sbase
+    qd_total_kvar = sum(qd_vals_pu) * sbase
+
+    println("  Network summary:")
     println("    Buses        : $(length(data_math["bus"]))")
     println("    Loads        : $(length(data_math["load"]))")
-    println("    pd per load  : $(round(minimum(pd_vals),sigdigits=3)) – $(round(maximum(pd_vals),sigdigits=3)) pu")
-    println("    qd per load  : $(round(minimum(qd_vals),sigdigits=3)) – $(round(maximum(qd_vals),sigdigits=3)) pu")
-    println("    Total pd     : $(round(sum(pd_vals),sigdigits=4)) pu")
-    println("    Total qd     : $(round(sum(qd_vals),sigdigits=4)) pu")
+    println("    System Sbase : $(sbase) kW")
+    println("    Total pd     : $(round(sum(pd_vals_pu), sigdigits=4)) pu ($(round(pd_total_kw, digits=2)) kW / $(round(pd_total_kw/1000, digits=3)) MW)")
+    println("    Total qd     : $(round(sum(qd_vals_pu), sigdigits=4)) pu ($(round(qd_total_kvar, digits=2)) kVAR)")
 end
 
 # ═══════════════════════════════════════════════════════════════
@@ -599,7 +603,7 @@ function solve_and_report(data_math, label)
             v_min   = minimum(vm_all)
             v_mean  = mean(vm_all)
             v_max   = maximum(vm_all)
-            n_over  = count(v -> v > 1.10, vm_all)
+            n_over  = count(v -> v >= 1.10, vm_all)
             n_under = count(v -> v < 0.90, vm_all)
 
             println("    Voltage min/mean/max  : $(round(v_min,digits=4)) / $(round(v_mean,digits=4)) / $(round(v_max,digits=4)) pu")
@@ -627,26 +631,38 @@ function solve_and_report(data_math, label)
         # PV dispatch
         pv_gens = [(i, g) for (i, g) in data_math["gen"] if get(g, "type", "") == "PV"]
         if !isempty(pv_gens) && haskey(sol, "gen")
+            sbase = get(data_math["settings"], "sbase_default", 1000.0)
+
             pg_vals  = [sum(get(sol["gen"][i], "pg", zeros(3))) for (i, g) in pv_gens if haskey(sol["gen"], i)]
             pg_rated = [sum(g["pmax"])                          for (i, g) in pv_gens]
             pg_total = sum(pg_vals)
             pg_cap   = sum(pg_rated)
+
+            pg_total_kw = pg_total * sbase
+            pg_cap_kw   = pg_cap * sbase
+
             util     = pg_total / max(1e-9, pg_cap) * 100
             curtail  = 100.0 - util
-            println("    PV output / capacity  : $(round(pg_total,sigdigits=4)) / $(round(pg_cap,sigdigits=4)) pu")
+            println("    PV output / capacity  : $(round(pg_total,sigdigits=4)) / $(round(pg_cap,sigdigits=4)) pu  →  $(round(pg_total_kw, digits=2)) kW / $(round(pg_cap_kw, digits=2)) kW")
             println("    PV utilisation        : $(round(util,digits=1))%  →  curtailment: $(round(max(0,curtail),digits=1))%")
         end
 
         # STATCOM dispatch
         st_gens = [(i, g) for (i, g) in data_math["gen"] if get(g, "type", "") == "STATCOM"]
         if !isempty(st_gens) && haskey(sol, "gen")
+            sbase = get(data_math["settings"], "sbase_default", 1000.0)
+
             qg_vals  = [sum(get(sol["gen"][i], "qg", zeros(3))) for (i, g) in st_gens if haskey(sol["gen"], i)]
             qg_rated = [sum(g["qmax"])                          for (i, g) in st_gens]
             qg_total = sum(qg_vals)
             qg_cap   = sum(qg_rated)
+
+            qg_total_kvar = qg_total * sbase
+            qg_cap_kvar   = qg_cap * sbase
+
             util     = abs(qg_total) / max(1e-9, qg_cap) * 100
             direction = qg_total >= 0 ? "injecting ↑V" : "absorbing ↓V"
-            println("    STATCOM Q / capacity  : $(round(qg_total,sigdigits=4)) / $(round(qg_cap,sigdigits=4)) pu")
+            println("    STATCOM Q / capacity  : $(round(qg_total,sigdigits=4)) / $(round(qg_cap,sigdigits=4)) pu  →  $(round(qg_total_kvar, digits=2)) kVAR / $(round(qg_cap_kvar, digits=2)) kVAR")
             println("    STATCOM utilisation   : $(round(util,digits=1))%  $(direction)")
         end
 
