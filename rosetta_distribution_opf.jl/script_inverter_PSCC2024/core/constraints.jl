@@ -1,3 +1,4 @@
+#OG constraints
 alpha = exp(im*2/3*pi)
 T = 1/3 * [1 1 1 ; 1 alpha alpha^2 ; 1 alpha^2 alpha]
 Tre = real.(T)
@@ -359,3 +360,5 @@ for (i, bus) in ref[:bus]
                             )
     
 end
+
+

@@ -67,7 +67,7 @@ ipopt_solver = JuMP.optimizer_with_attributes(
     "print_level" => 0,
     "sb"          => "yes",
     "max_iter"    => 50000,
-    "warm_start_init_point" => "yes",
+    "warm_start_init_point" => "no", # claude says keep no
     "tol" => 1e-3,                   # Relax the main tolerance (1e-4 -> 1e-3)
     "acceptable_tol" => 1e-1,        # Be very forgiving if it gets close
     "constr_viol_tol" => 1e-3,       # Allow tiny overlaps in constraints
@@ -95,11 +95,13 @@ function load_base_network(data_path; load_multiplier=1.0, enforce_bounds=true)
     # PowerModelsDistribution typically stores this in Volt-Amperes (e.g., 1e6 = 1 MVA)
     # Print data_eng["settings"]["sbase"] once to see its current value, 
     # then overwrite it to a smaller base like 100 kVA (100_000.0) or 1 MVA (1_000_000.0)
-    data_eng["settings"]["sbase"] = 100_000.0 
     # ----------------------
     data_math = PMD.transform_data_model(
-        data_eng, multinetwork=false, kron_reduce=false, phase_project=false
+        data_eng, multinetwork=false, kron_reduce=false, phase_project=false,
+        make_pu=false   # skip PMD's own pu conversion
     )
+    PMD.make_per_unit!(data_math; sbase=1000.0)   # do it yourself, with your chosen base
+
     PMD.add_start_vrvi!(data_math)
 
     for (i, bus) in data_math["bus"]
@@ -204,9 +206,23 @@ function build_and_solve(data_math)
     global model = JuMP.Model(ipopt_solver)
 
     include("./core/variables.jl")
+
+
+    # === ADD: start values for STATCOM crg/cig, if any are present ===
+    if @isdefined(STATCOM_GEN_IDS)
+        for gid in STATCOM_GEN_IDS
+            for p in 1:3
+                JuMP.set_start_value(crg[p,gid], 0.0)
+                JuMP.set_start_value(cig[p,gid], 0.0)
+            end
+        end
+    end
+    # === END ADD ===
+
     include("./core/constraints_PBalance.jl")
 
-    global objective = "cost"
+    global objective = "VUF"
+    global objective_aggregation = :sum   # or :max
     include("./core/objectives_FIXED.jl")
 
     JuMP.optimize!(model)
@@ -326,7 +342,7 @@ end
 # -----------------------------------------------------------------------
 LOAD_MULTIPLIERS = [2.0, 3, 4.5, 6.0, 7.0]
 N_STATCOMS          = 10
-RATING_KVAR_EACH     = 5.0   # per-unit nameplate rating, real kVAr
+RATING_KVAR_EACH     = 20.0   # per-unit nameplate rating, real kVAr
 
 scenarios = [
     ("A: No STATCOM",             :none),
@@ -365,12 +381,14 @@ for lm in LOAD_MULTIPLIERS
 
         dm = load_base_network(data_path; load_multiplier=lm, enforce_bounds=true)
 
+        global STATCOM_GEN_IDS = Int[]  # reset before every scenario, then overwrite below if kind != :none
         statcom_gen_ids = Int[]
         if kind != :none
             statcom_gen_ids = add_statcoms!(dm, SBASE_KVA; n_units=N_STATCOMS,
-                                             rating_kvar_each=RATING_KVAR_EACH,
-                                             p_exchange=(kind == :pexchange))
+                                            rating_kvar_each=RATING_KVAR_EACH,
+                                            p_exchange=(kind == :pexchange))
         end
+        global STATCOM_GEN_IDS = statcom_gen_ids
 
         status = try
             build_and_solve(dm)
