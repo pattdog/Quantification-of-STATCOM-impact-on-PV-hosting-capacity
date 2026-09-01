@@ -248,9 +248,16 @@ function add_pv!(data_math;
         # Defensive: trim any other length-3 template field (e.g. vg/pg/qg
         # starting points) down to n_ph so the gen record stays internally
         # consistent. PMD versions vary in which fields exist here.
+        #=
         for (k, v) in gen
             if v isa Vector{<:Real} && length(v) == 3 && n_ph != 3
                 gen[k] = v[1:n_ph]
+            end
+        end
+        =#
+        for (k, v) in gen
+            if v isa Vector{<:Real} && length(v) == 3 && n_ph != 3
+                gen[k] = v[phase_conns]
             end
         end
 

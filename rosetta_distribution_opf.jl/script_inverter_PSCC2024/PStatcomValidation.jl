@@ -67,7 +67,7 @@ ipopt_solver = JuMP.optimizer_with_attributes(
     "print_level" => 0,
     "sb"          => "yes",
     "max_iter"    => 50000,
-    "warm_start_init_point" => "no", # claude says keep no
+    "warm_start_init_point" => "yes", # claude says keep no
     "tol" => 1e-3,                   # Relax the main tolerance (1e-4 -> 1e-3)
     "acceptable_tol" => 1e-1,        # Be very forgiving if it gets close
     "constr_viol_tol" => 1e-3,       # Allow tiny overlaps in constraints
@@ -209,11 +209,23 @@ function build_and_solve(data_math)
 
 
     # === ADD: start values for STATCOM crg/cig, if any are present ===
+    # NOTE: not exact zero -- a small genuine positive-sequence current
+    # pattern instead. crg_012/cig_012 (IUF/IUF2's sequence-current
+    # expressions) are DERIVED from crg/cig, with no start of their own.
+    # An exact-zero crg/cig start makes IUF's denominator
+    # (crg_012[2]^2+cig_012[2]^2) evaluate to exactly 0/0 = NaN at the very
+    # first model evaluation -- before Ipopt even takes a step -- which is
+    # what produces INVALID_MODEL rather than a normal solve/infeasible
+    # result. A small balanced positive-sequence triplet keeps crg=cig=0
+    # harmless for "cost"/IUF2 (which don't depend on this) while giving
+    # IUF's denominator a safely nonzero starting value.
     if @isdefined(STATCOM_GEN_IDS)
+        small_cr = [0.001, -0.0005, -0.0005]
+        small_ci = [0.0, -0.0008660254, 0.0008660254]
         for gid in STATCOM_GEN_IDS
             for p in 1:3
-                JuMP.set_start_value(crg[p,gid], 0.0)
-                JuMP.set_start_value(cig[p,gid], 0.0)
+                JuMP.set_start_value(crg[p,gid], small_cr[p])
+                JuMP.set_start_value(cig[p,gid], small_ci[p])
             end
         end
     end
@@ -221,8 +233,9 @@ function build_and_solve(data_math)
 
     include("./core/constraints_PBalance.jl")
 
-    global objective = "VUF"
-    global objective_aggregation = :sum   # or :max
+    global objective = "loss"
+    global objective_aggregation = :max   # or :sum
+    println("    [objective = \"$objective\"]")
     include("./core/objectives_FIXED.jl")
 
     JuMP.optimize!(model)
@@ -329,7 +342,7 @@ function format_agg_dispatch(d)
     isnothing(d) && return "n/a"
     parts = String[]
     for p in 1:3
-        push!(parts, @sprintf("ph%d: net P=%.3f Q=%.3f kVAr | gross P=%.3f Q=%.3f kVAr",
+        push!(parts, @sprintf("ph%d: net P=%.3f kW Q=%.3f kVAr | gross P=%.3f kW Q=%.3f kVAr",
               p, d.net_pg[p], d.net_qg[p], d.gross_pg[p], d.gross_qg[p]))
     end
     header = @sprintf("[%d units, worst per-unit utilization = %.1f%% at gen %s]",

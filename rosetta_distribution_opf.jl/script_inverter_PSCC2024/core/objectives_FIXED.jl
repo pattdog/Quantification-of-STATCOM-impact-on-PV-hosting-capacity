@@ -267,57 +267,101 @@ elseif objective in ["VUF", "VUF2", "PVUR", "LVUR"]
 
 # ==============================================================================
 elseif objective in ["IUF", "IUF2", "PIUR"]
-    # CHANGE 1 (bugfix): cmg used crg_bus twice instead of crg_bus + cig_bus,
-    # silently dropping the imaginary current component. Fixed below.
-    # CHANGE 2: loops over target_gens (any count) instead of assuming gen "1"
-    # is the only meaningful device (IUF/IUF2 previously hardcoded [3,1]/[2,1]).
-    if isempty(target_gens)
+    # CHANGE: restrict target_gens to genuinely 3-phase generators only.
+    # Sequence decomposition is only meaningful for a device with all 3
+    # phases -- a single-phase generator (e.g. phase-matched residential PV)
+    # has no negative-sequence current to speak of, and Tre/Tim (fixed 3x3
+    # sequence-transform matrices) cannot be multiplied against a length-1
+    # phases vector.
+    iuf_target_gens = filter(i -> begin
+        g = ref[:gen][i]
+        conns = g["connections"]
+        phases_i = 4 in conns ? conns[1:end-1] : conns
+        length(phases_i) == 3
+    end, target_gens)
+
+    if isempty(iuf_target_gens)
         no_targets_bypass!()
     else
-        int_dim = Dict(i => RPMD._infer_int_dim_unit(ref[:gen][i], !(4 in ref[:gen][i]["connections"])) for i in target_gens)
-        cmg = Dict(i => JuMP.@variable(model, [c in 1:int_dim[i]], base_name="cmg_$i", lower_bound=0) for i in target_gens)
-        cmg = JuMP.Containers.DenseAxisArray(Matrix{JuMP.AffExpr}([c in 1:int_dim[i] ? cmg[i][c] : 0.0 for c in 1:n_ph, i in target_gens]), 1:n_ph, target_gens)
-        crg_012 = Dict(i => JuMP.@variable(model, [c in 1:int_dim[i]], base_name="crg_012_$i") for i in target_gens)
-        crg_012 = JuMP.Containers.DenseAxisArray(Matrix{JuMP.AffExpr}([c in 1:int_dim[i] ? crg_012[i][c] : 0.0 for c in 1:n_ph, i in target_gens]), 1:n_ph, target_gens)
-        cig_012 = Dict(i => JuMP.@variable(model, [c in 1:int_dim[i]], base_name="cig_012_$i") for i in target_gens)
-        cig_012 = JuMP.Containers.DenseAxisArray(Matrix{JuMP.AffExpr}([c in 1:int_dim[i] ? cig_012[i][c] : 0.0 for c in 1:n_ph, i in target_gens]), 1:n_ph, target_gens)
-        cmg_012 = Dict(i => JuMP.@variable(model, [c in 1:int_dim[i]], base_name="cmg_012_$i", lower_bound=0) for i in target_gens)
-        cmg_012 = JuMP.Containers.DenseAxisArray(Matrix{JuMP.AffExpr}([c in 1:int_dim[i] ? cmg_012[i][c] : 0.0 for c in 1:n_ph, i in target_gens]), 1:n_ph, target_gens)
-
-        for i in target_gens
+        # crg_012/cig_012 as expressions -- exact linear combinations of
+        # crg_bus/cig_bus, same treatment as vr_012/vi_012 in the VUF block.
+        # No new variables/equality constraints needed for these.
+        crg_012 = Dict{Int,Vector{JuMP.AffExpr}}()
+        cig_012 = Dict{Int,Vector{JuMP.AffExpr}}()
+        for i in iuf_target_gens
             gen = ref[:gen][i]
             phases = 4 in gen["connections"] ? gen["connections"][1:end-1] : gen["connections"]
-            # BUGFIX: was crg_bus.^2 .+ crg_bus.^2 -- now correctly uses cig_bus
-            # for the imaginary component.
-            JuMP.@constraint(model, cmg[phases,i].^2 .== crg_bus[phases,i].^2 .+ cig_bus[phases,i].^2)
-            JuMP.@constraint(model, crg_012[phases,i] .== Tre * Array(crg_bus[phases,i]) .- Tim * Array(cig_bus[phases,i]))
-            JuMP.@constraint(model, cig_012[phases,i] .== Tre * Array(cig_bus[phases,i]) .+ Tim * Array(crg_bus[phases,i]))
-            JuMP.@constraint(model, cmg_012[phases,i].^2 .== crg_012[phases,i].^2 .+ cig_012[phases,i].^2)
+            crg_012[i] = JuMP.@expression(model, Tre * Array(crg_bus[phases,i]) .- Tim * Array(cig_bus[phases,i]))
+            cig_012[i] = JuMP.@expression(model, Tre * Array(cig_bus[phases,i]) .+ Tim * Array(crg_bus[phases,i]))
+        end
+        # index convention: crg_012[i][2]/cig_012[i][2] = positive sequence
+        #                    crg_012[i][3]/cig_012[i][3] = negative sequence
+
+        # NOTE: cmg_012 (sqrt-defined sequence-current MAGNITUDE) is
+        # deliberately NOT built here. IUF/IUF2 only ever need squared
+        # sequence-current magnitudes (crg_012^2 + cig_012^2), which need no
+        # sqrt and no extra variable. Introducing cmg_012 via
+        # cmg_012^2 == crg_012^2 + cig_012^2 -- as an earlier version of this
+        # file did -- creates a constraint whose Jacobian vanishes exactly at
+        # the point IUF2's own objective drives toward (negative-sequence
+        # current -> 0), the same degenerate-constraint mechanism as vm_012
+        # under VUF2. Confirmed empirically: IUF2 solved fine on some
+        # scenarios/load levels but hit OTHER_ERROR on others (specifically
+        # where the STATCOM's extra P-exchange freedom let it get closest to
+        # true negative-sequence-current zero) -- removing cmg_012 entirely
+        # removes the degenerate constraint outright, same fix as VUF2.
+
+        # cmg (per-PHASE current magnitude, NOT a sequence quantity) is only
+        # built when PIUR actually needs it -- IUF/IUF2 never reference cmg
+        # at all, so building it for them was pure waste plus its own
+        # potential unused-variable degeneracy.
+        need_cmg = objective == "PIUR"
+        if need_cmg
+            int_dim = Dict(i => RPMD._infer_int_dim_unit(ref[:gen][i], !(4 in ref[:gen][i]["connections"])) for i in iuf_target_gens)
+            cmg = Dict(i => JuMP.@variable(model, [c in 1:int_dim[i]], base_name="cmg_$i", lower_bound=0) for i in iuf_target_gens)
+            cmg = JuMP.Containers.DenseAxisArray(Matrix{JuMP.AffExpr}([c in 1:int_dim[i] ? cmg[i][c] : 0.0 for c in 1:n_ph, i in iuf_target_gens]), 1:n_ph, iuf_target_gens)
+            for i in iuf_target_gens
+                gen = ref[:gen][i]
+                phases = 4 in gen["connections"] ? gen["connections"][1:end-1] : gen["connections"]
+                JuMP.@constraint(model, cmg[phases,i].^2 .== crg_bus[phases,i].^2 .+ cig_bus[phases,i].^2)
+                for p in phases
+                    JuMP.set_start_value(cmg[p,i], sqrt(JuMP.start_value(crg_bus[p,i])^2 + JuMP.start_value(cig_bus[p,i])^2))
+                end
+            end
         end
 
         if objective == "IUF"
-            # Fleet-wide: sum of per-device negative/positive-sequence current
-            # ratios. (A single division ratio does not generalize cleanly to
-            # a sum-of-ratios across devices -- summing the ratios themselves
-            # is the natural multi-device analogue.)
-            JuMP.@objective(model, Min, sum(cmg_012[3,i] / cmg_012[2,i] for i in target_gens))
+            # Guard the denominator away from zero -- same issue as VUF's
+            # division. Floor applied directly on the squared positive-
+            # sequence current (crg_012[2]^2 + cig_012[2]^2), no cmg_012
+            # intermediary needed.
+            for i in iuf_target_gens
+                JuMP.@constraint(model, crg_012[i][2]^2 + cig_012[i][2]^2 >= 1e-6)
+            end
+            JuMP.@objective(model, Min, sum(
+                (crg_012[i][3]^2 + cig_012[i][3]^2) / (crg_012[i][2]^2 + cig_012[i][2]^2)
+                for i in iuf_target_gens))
 
         elseif objective == "IUF2"
-            JuMP.@objective(model, Min, sum(cmg_012[3,i] for i in target_gens))
+            # Unnormalized: sum of squared negative-sequence current
+            # magnitude. No division, no sqrt-defined auxiliary variable --
+            # simplest/best-conditioned in this group, same role as VUF2.
+            JuMP.@objective(model, Min, sum(crg_012[i][3]^2 + cig_012[i][3]^2 for i in iuf_target_gens))
 
         elseif objective == "PIUR"
-            # CHANGE: epigraph over every target gen instead of just id 1.
-            phase_current = JuMP.@variable(model, [i in target_gens], base_name="phase_current", lower_bound=0)
-            for i in target_gens
+            phase_current = JuMP.@variable(model, [i in iuf_target_gens], base_name="phase_current", lower_bound=0)
+            JuMP.set_start_value.(phase_current, 0.0)
+            for i in iuf_target_gens
                 gen = ref[:gen][i]
                 connections = gen["connections"][1:end-1]
                 JuMP.@constraint(model, [t in connections], phase_current[i] >= cmg[t,i] - sum(cmg[connections,i])/3)
             end
             if aggregation == :sum
-                JuMP.@objective(model, Min, sum(phase_current[i] / (sum(cmg[ref[:gen][i]["connections"][1:end-1],i])/3) for i in target_gens))
+                JuMP.@objective(model, Min, sum(phase_current[i] / (sum(cmg[ref[:gen][i]["connections"][1:end-1],i])/3) for i in iuf_target_gens))
             else
                 worst = JuMP.@variable(model, base_name="worst_piur", lower_bound=0)
-                for i in target_gens
+                JuMP.set_start_value(worst, 0.0)
+                for i in iuf_target_gens
                     connections = ref[:gen][i]["connections"][1:end-1]
                     JuMP.@constraint(model, worst >= phase_current[i] / (sum(cmg[connections,i])/3))
                 end
@@ -325,43 +369,10 @@ elseif objective in ["IUF", "IUF2", "PIUR"]
             end
         end
     end
-
 # ==============================================================================
-elseif objective in ["IUF_inv", "IUF2_inv"]
-    # CHANGE: removed dead `branch_id = 1` (immediately overwritten before).
-    # Added an explicit override so callers can target a specific branch
-    # instead of always auto-detecting the feeder head.
-    _, _, arc, branch = RPMD.get_ref_bus_branch(ref)
-    if @isdefined(objective_branch_id)
-        arc = objective_branch_id
-        branch = ref[:branch][arc[1]]
-    end
 
-    nconds = Dict(l => length(br["f_connections"]) for (l,br) in ref[:branch])
-    conds  = Dict(l => br["f_connections"] for (l,br) in ref[:branch])
 
-    cm = Dict((l,i,j) => JuMP.@variable(model, [c in conds[l]], base_name="cm_$((l,i,j))", lower_bound=0) for (l,i,j) in [arc])
-    cm = JuMP.Containers.DenseAxisArray(Matrix{JuMP.AffExpr}([c in cm[(l,i,j)].axes[1] ? cm[(l,i,j)][c] : 0.0 for c in 1:n_ph, (l,i,j) in [arc]]), 1:n_ph, [arc])
-    cr_012 = Dict((l,i,j) => JuMP.@variable(model, [c in conds[l]], base_name="cr_012_$((l,i,j))") for (l,i,j) in [arc])
-    cr_012 = JuMP.Containers.DenseAxisArray(Matrix{JuMP.AffExpr}([c in cr_012[(l,i,j)].axes[1] ? cr_012[(l,i,j)][c] : 0.0 for c in 1:n_ph, (l,i,j) in [arc]]), 1:n_ph, [arc])
-    ci_012 = Dict((l,i,j) => JuMP.@variable(model, [c in conds[l]], base_name="ci_012_$((l,i,j))") for (l,i,j) in [arc])
-    ci_012 = JuMP.Containers.DenseAxisArray(Matrix{JuMP.AffExpr}([c in ci_012[(l,i,j)].axes[1] ? ci_012[(l,i,j)][c] : 0.0 for c in 1:n_ph, (l,i,j) in [arc]]), 1:n_ph, [arc])
-    cm_012 = Dict((l,i,j) => JuMP.@variable(model, [c in conds[l]], base_name="cm_012_$((l,i,j))", lower_bound=0) for (l,i,j) in [arc])
-    cm_012 = JuMP.Containers.DenseAxisArray(Matrix{JuMP.AffExpr}([c in cm_012[(l,i,j)].axes[1] ? cm_012[(l,i,j)][c] : 0.0 for c in 1:n_ph, (l,i,j) in [arc]]), 1:n_ph, [arc])
 
-    phases = 1:3
-    JuMP.@constraint(model, cm[phases,arc].^2 .== cr_bus[phases,arc].^2 .+ ci_bus[phases,arc].^2)
-    JuMP.@constraint(model, cr_012[phases,arc] .== Tre * Array(cr_bus[phases,arc]) .- Tim * Array(ci_bus[phases,arc]))
-    JuMP.@constraint(model, ci_012[phases,arc] .== Tre * Array(ci_bus[phases,arc]) .+ Tim * Array(cr_bus[phases,arc]))
-    JuMP.@constraint(model, cm_012[phases,arc].^2 .== cr_012[phases,arc].^2 .+ ci_012[phases,arc].^2)
-
-    if objective == "IUF_inv"
-        JuMP.@objective(model, Min, cm_012[3,arc] / cm_012[2,arc])
-    elseif objective == "IUF2_inv"
-        JuMP.@objective(model, Min, cm_012[3,arc])
-    end
-
-# ==============================================================================
 elseif objective == "PPUR"
     # CHANGE (bugfix + generalization): was hardcoded to gen id 1, which per
     # our network-setup discussion is the REFERENCE/SLACK generator, not a

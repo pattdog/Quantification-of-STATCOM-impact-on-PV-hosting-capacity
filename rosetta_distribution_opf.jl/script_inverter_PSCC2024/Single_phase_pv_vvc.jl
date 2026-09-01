@@ -133,29 +133,16 @@ PMD.silence!()
 
 ipopt_solver = JuMP.optimizer_with_attributes(
     Ipopt.Optimizer,
-    "print_level"           => 0,
-    "sb"                    => "yes",
-    "warm_start_init_point" => "yes",
-    "max_iter"              => 50000,
-    # Loosened from Ipopt's tight defaults specifically to handle cases
-    # where the network's natural operating point lands very close to one
-    # of the VVC droop curve's breakpoints (V1-V4) — a known weak spot for
-    # gradient-based solvers on piecewise-linear control curves (see
-    # Mhanna et al. VVWO paper, Sec. I-B/II-B). Near a kink, Ipopt can take
-    # many small steps chasing exact KKT satisfaction; accepting a "good
-    # enough" solution avoids multi-minute hangs on individual cases while
-    # every other case solves in single-digit seconds. If this still isn't
-    # enough for a specific case, that's the point at which the softplus
-    # smooth approximation (Eq. 6-7 in that paper) becomes worth building
-    # properly, rather than reaching for it preemptively.
-    "tol"                   => 1e-4,
-    "acceptable_tol"        => 1e-3,
-    "acceptable_iter"       => 15,
-    # "linear_solver" => "ma27",  # reverted: MA27/HSL isn't installed in
-    # this Ipopt build — passing this caused an immediate INVALID_OPTION
-    # on every solve (confirmed: all cases failed in <1.5s, too fast to be
-    # a real convergence attempt). Falls back to default MUMPS. Revisit
-    # only if HSL gets installed separately later.
+    "print_level" => 0,
+    "sb"          => "yes",
+    "max_iter"    => 50000,
+    "warm_start_init_point" => "no", # claude says keep no
+    "tol" => 1e-3,                   # Relax the main tolerance (1e-4 -> 1e-3)
+    "acceptable_tol" => 1e-1,        # Be very forgiving if it gets close
+    "constr_viol_tol" => 1e-3,       # Allow tiny overlaps in constraints
+    
+    # Advanced Scaling - Helps with 4-wire numerical issues
+    "nlp_scaling_method" => "gradient-based", 
 )
 
 
@@ -383,7 +370,7 @@ function add_pv!(data_math;
         # consistent. PMD versions vary in which fields exist here.
         for (k, v) in gen
             if v isa Vector{<:Real} && length(v) == 3 && n_ph != 3
-                gen[k] = v[1:n_ph]
+                gen[k] = v[phase_conns]
             end
         end
 
@@ -506,7 +493,7 @@ function solve_and_report(data_math, label; objective_choice="cost", sbase_kva=S
     global model = JuMP.Model(ipopt_solver)
     include("./core/variables.jl")
     include("./core/constraints_VVC.jl")
-    include("./core/objectives.jl")
+    include("./core/objectives_FIXED.jl")
 
     println("    solving...")
     t0 = time()
@@ -827,7 +814,7 @@ PV_KW_LEVELS = [1.0, 3.0, 5.0, 7.0, 10.0]
 # Case 3: fixed PV size for hosting-capacity stress test, chosen to sit
 # inside typical UK single-phase residential inverter range (≤5kW is most
 # common; higher values push into stress-test territory deliberately)
-CASE3_PV_KW = 5.0
+CASE3_PV_KW = 20
 
 # Case 3: STATCOM rating sweep, kVAr TOTAL nameplate per unit
 STATCOM_RATINGS_KVAR = [1.0, 5.0, 10.0, 20.0, 30.0, 50.0, 70.0, 100.0, 200.0]
