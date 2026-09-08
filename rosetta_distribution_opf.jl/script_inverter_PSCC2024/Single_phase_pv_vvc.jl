@@ -130,35 +130,41 @@ const PMD  = PowerModelsDistribution
 const RPMD = rosetta_distribution_opf
 const IM   = InfrastructureModels
 PMD.silence!()
-
+#=
+ipopt_solver = JuMP.optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 5,
+    "max_iter" => 10000)
+    =#
 ipopt_solver = JuMP.optimizer_with_attributes(
     Ipopt.Optimizer,
     "print_level" => 0,
     "sb"          => "yes",
-    "max_iter"    => 50000,
-    "warm_start_init_point" => "no", # claude says keep no
-    "tol" => 1e-3,                   # Relax the main tolerance (1e-4 -> 1e-3)
-    "acceptable_tol" => 1e-1,        # Be very forgiving if it gets close
+    "max_iter"    => 1500,
+    "warm_start_init_point" => "yes", # claude says keep no
+    "tol" => 1e-3, #3,                   # Relax the main tolerance (1e-4 -> 1e-3)
+    "acceptable_tol" => 1e-1, #1,        # Be very forgiving if it gets close
     "constr_viol_tol" => 1e-3,       # Allow tiny overlaps in constraints
     
     # Advanced Scaling - Helps with 4-wire numerical issues
-    "nlp_scaling_method" => "gradient-based", 
+    "nlp_scaling_method" => "none", 
 )
 
 
 data_path = "./rosetta_distribution_opf.jl/data/ENWL_4w_Network1_Feeder1/Master.dss"
 
-# ═══════════════════════════════════════════════════════════════
-# NETWORK LOADER  — unchanged from seminarScript.jl
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════
+# NETWORK LOADER  
+# ═══════════════════
 function load_base_network(data_path;
         load_multiplier = 1.0,
         enforce_bounds  = false)
 
     data_eng  = PMD.parse_file(data_path, transformations=[PMD.transform_loops!])
     data_math = PMD.transform_data_model(
-        data_eng, multinetwork=false, kron_reduce=false, phase_project=false
+        data_eng, multinetwork=false, kron_reduce=false, phase_project=false,
+        make_pu=false   # skip PMD's own pu conversion
     )
+    PMD.make_per_unit!(data_math; sbase=10.0)   # 10 kVA
+    PMD.add_start_vrvi!(data_math)
 
     for (i, bus) in data_math["bus"]
         if bus["bus_type"] == 3
@@ -492,7 +498,31 @@ function solve_and_report(data_math, label; objective_choice="cost", sbase_kva=S
     global ref = IM.build_ref(data_math, PMD.ref_add_core!, PMD._pmd_global_keys, PMD.pmd_it_name)[:it][:pmd][:nw][0]
     global model = JuMP.Model(ipopt_solver)
     include("./core/variables.jl")
-    include("./core/constraints_VVC.jl")
+        # === ADD: start values for STATCOM crg/cig, if any are present ===
+    # NOTE: not exact zero -- a small genuine positive-sequence current
+    # pattern instead. crg_012/cig_012 (IUF/IUF2's sequence-current
+    # expressions) are DERIVED from crg/cig, with no start of their own.
+    # An exact-zero crg/cig start makes IUF's denominator
+    # (crg_012[2]^2+cig_012[2]^2) evaluate to exactly 0/0 = NaN at the very
+    # first model evaluation -- before Ipopt even takes a step -- which is
+    # what produces INVALID_MODEL rather than a normal solve/infeasible
+    # result. A small balanced positive-sequence triplet keeps crg=cig=0
+    # harmless for "cost"/IUF2 (which don't depend on this) while giving
+    # IUF's denominator a safely nonzero starting value.
+    if @isdefined(STATCOM_GEN_IDS)
+        small_cr = [0.001, -0.0005, -0.0005]
+        small_ci = [0.0, -0.0008660254, 0.0008660254]
+        for gid in STATCOM_GEN_IDS
+            for p in 1:3
+                JuMP.set_start_value(crg[p,gid], small_cr[p])
+                JuMP.set_start_value(cig[p,gid], small_ci[p])
+            end
+        end
+    end
+    # === END ADD ===
+    #include("./core/constraints_VVC.jl")
+    include("./core/constraints_unified.jl")
+    println("    [objective = \"$objective\"]")
     include("./core/objectives_FIXED.jl")
 
     println("    solving...")
@@ -521,7 +551,12 @@ function solve_and_report(data_math, label; objective_choice="cost", sbase_kva=S
         # data_math["bus"][string(b)] instead.
         vm_all     = Float64[]
         bus_labels = String[]
-
+        #=println("DEBUG total bus keys: ", length(keys(ref[:bus])))
+        println("DEBUG bus keys sample: ", sort(collect(keys(ref[:bus])))[1:5])
+        println("DEBUG vr axis2 length: ", length(vr.axes[2]))
+        println("DEBUG vr axis2 sample: ", sort(collect(vr.axes[2]))[1:5])
+        println("DEBUG 2 in ref[:bus] keys: ", 2 in keys(ref[:bus]))
+        println("DEBUG 2 in vr.axes[2]: ", 2 in vr.axes[2])=#
         for (b, bus) in ref[:bus]
             bus["bus_type"] == 3 && continue
             bus_max = 0.0
@@ -742,10 +777,20 @@ end
 
 # ── Plot 2: STATCOM rating sweep ─────────────────────────────────────────────
 function plot_rating_sweep(rating_results; savepath="./plots/rating_sweep.pdf")
+    valid_results = filter(r -> isfinite(r.util), rating_results)
+    if length(valid_results) < length(rating_results)
+        n_failed = length(rating_results) - length(valid_results)
+        println("  WARNING: $n_failed rating(s) failed to solve — excluded from plot")
+    end
 
-    ratings  = Float64[d.rating_kvar for d in rating_results]
-    utils    = Float64[d.util        for d in rating_results]
-    baseline = rating_results[1].baseline
+    if isempty(valid_results)
+        println("  WARNING: no valid ratings to plot — skipping rating_sweep plot entirely")
+        return nothing
+    end
+
+    ratings  = Float64[d.rating_kvar for d in valid_results]
+    utils    = Float64[d.util        for d in valid_results]
+    baseline = valid_results[1].baseline
 
     fig = Figure(size=(820, 500), backgroundcolor=:white)
     ax  = Axis(fig[1,1],
@@ -814,7 +859,7 @@ PV_KW_LEVELS = [1.0, 3.0, 5.0, 7.0, 10.0]
 # Case 3: fixed PV size for hosting-capacity stress test, chosen to sit
 # inside typical UK single-phase residential inverter range (≤5kW is most
 # common; higher values push into stress-test territory deliberately)
-CASE3_PV_KW = 20
+CASE3_PV_KW = 10
 
 # Case 3: STATCOM rating sweep, kVAr TOTAL nameplate per unit
 STATCOM_RATINGS_KVAR = [1.0, 5.0, 10.0, 20.0, 30.0, 50.0, 70.0, 100.0, 200.0]
@@ -892,7 +937,7 @@ if do_case3
     println(" CASE 3: STATCOM Hosting Capacity Study")
     println(" PV: $(CASE3_PV_KW) kW/unit, single-phase, phase-matched  |  bounds: 0.90–1.10 pu")
     println(" PV cost: $(PV_COST)  |  STATCOM cost: $(STATCOM_COST)")
-    println(" Builder: ref/JuMP.Model + core/{variables,constraints,objectives}.jl  |  Objective: cost")
+    println(" Builder: ref/JuMP.Model + core/{variables,constraints,objectives}.jl")
     println("="^55)
 
     println("\n  ── 3a: PV only (VVC droop) — hosting capacity baseline ──")
