@@ -1,20 +1,62 @@
-# VVW constraints
+#println("### constraints_unified.jl LOADED ###")
+#=
+==============================================================================
+constraints_unified.jl -- merged PV-VVC patch + STATCOM P-exchange patch
+==============================================================================
+This file unifies two previously-separate constraints files that both
+derived from the same "OG" base:
+
+  - constraints file A ("VVC file"): added a joint P^2+Q^2<=S^2 capability
+    constraint plus a local Volt-Var droop for PV generators, guarded by
+        generator["type"] == "PV" && haskey(generator, "s_rating")
+
+  - constraints file B ("STATCOM P-exchange file"): added a per-phase
+    P^2+Q^2<=S^2 capability constraint plus a DC-bus coupling constraint
+    (sum of per-phase P == p_loss) for STATCOMs doing inter-phase active
+    power exchange, guarded by
+        generator["statcom_p_exchange"] == true
+
+These two guards are mutually exclusive per generator (a generator is either
+a VVC PV unit, a P-exchange STATCOM, or neither -- e.g. a plain Q-only
+STATCOM using the original box-bound path with pmin=pmax=0). Because neither
+patch touches the same lines as the other, and both are pure *additions*
+after the standard pg/qg-from-crg/cig equality constraints, they compose
+without conflict.
+
+ALSO CARRIED OVER: a bug fix present only in the STATCOM file's version of
+the reference-bus (slack) constraint. The original indexed
+    vr[:,i] .== vrefre
+which is a length mismatch whenever a bus has fewer than n_ph terminals
+(e.g. a 3-wire bus under n_ph=4 zero-padding), since vrefre/vrefim are only
+as long as that bus's actual terminal set. Fixed version:
+    vr[bus["terminals"],i] .== vrefre
+This fix is orthogonal to both patches and is kept unconditionally.
+
+Everything else (branch loop, load loop, bus KCL loop, DELTA-configuration
+generator branch) is identical across both source files and unchanged here.
+==============================================================================
+=#
+
 alpha = exp(im*2/3*pi)
 T = 1/3 * [1 1 1 ; 1 alpha alpha^2 ; 1 alpha^2 alpha]
 Tre = real.(T)
 Tim = imag.(T)
 
-
 for (i, bus) in ref[:bus]
     terminals = bus["terminals"]
     grounded = bus["grounded"]
-    
+
     if i in keys(ref[:ref_buses])
         vref = bus["vm"][bus["terminals"]] .* exp.(im*bus["va"][bus["terminals"]])
         vrefre = real.(vref)
         vrefim = imag.(vref)
-        JuMP.@constraint(model, vr[:,i] .== vrefre)
-        JuMP.@constraint(model, vi[:,i] .== vrefim)
+        # FIX (carried from STATCOM file, applies regardless of PV/STATCOM
+        # patches): vr[:,i]/vi[:,i] are always length n_ph=4 (zero-padded),
+        # but vrefre/vrefim are only as long as this bus's actual terminal
+        # set (e.g. 3 for a 3-wire bus). Index by bus["terminals"] so both
+        # sides match in length.
+        JuMP.@constraint(model, vr[bus["terminals"],i] .== vrefre)
+        JuMP.@constraint(model, vi[bus["terminals"],i] .== vrefim)
     end
 
     ungrounded_terminals = [t for (idx,t) in enumerate(terminals) if !grounded[idx]]
@@ -38,36 +80,25 @@ for (i, bus) in ref[:bus]
                 n = 4
             end
 
-            # vm = JuMP.@variable(model, [t in terminals,i], base_name="vm_$i", lower_bound=0)
             JuMP.@constraint(model, [t in terminals,i], vm[t,i]^2 == vr[t,i]^2 + vi[t,i]^2)
-            
+
             JuMP.@constraint(model, (vr[2,i] * vi[1,i] - vi[2,i] * vr[1,i]) / (vr[2,i] * vr[1,i] + vi[2,i] * vi[1,i]) == tan(2*pi/3))
             JuMP.@constraint(model, (vr[3,i] * vi[2,i] - vi[3,i] * vr[2,i]) / (vr[3,i] * vr[2,i] + vi[3,i] * vi[2,i]) == tan(2*pi/3))
-            # JuMP.@constraint(model, (vr[1,i] * vi[3,i] - vi[1,i] * vr[3,i]) / (vr[1,i] * vr[3,i] + vi[1,i] * vi[3,i]) == tan(2*pi/3))
-            # JuMP.@constraint(model, vi[1,i] == 0.0)
 
             if control_forming == "setpoint"
                 JuMP.@constraint(model, [t in terminals,i], vm[t,i] == bus["vm"][t])
-                # JuMP.@constraint(model, [t in terminals], vr[t,i]^2 + vi[t,i]^2 == bus["vm"][t]^2)
 
             elseif control_forming == "no_setpoint_droop"
                 JuMP.@constraint(model, vm[1,i] == vm[2,i])
                 JuMP.@constraint(model, vm[2,i] == vm[3,i])
-                # JuMP.@constraint(model, vr[1,i]^2 + vi[1,i]^2 == vr[2,i]^2 + vi[2,i]^2)
-                # JuMP.@constraint(model, vr[2,i]^2 + vi[2,i]^2 == vr[3,i]^2 + vi[3,i]^2)
 
             elseif control_forming == "droop"
-                # gen_id = 1
                 gen_id = [id for (id, gen) in ref[:gen] if gen["gen_bus"]==i][1]
                 gen = ref[:gen][gen_id]
                 JuMP.@constraint(model, [p in phases], vm[p,i] == bus["vm"][p] + gen["Dp"][p]*(gen["pg"][p] - pg[p,gen_id]) + gen["Dq"][p]*(gen["qg"][p] - qg[p,gen_id]))
-                # JuMP.@constraint(model, [p in phases], vm[p,i] == bus["vm"][p] + gen["Dp"][p]*(gen["pmax"][p] - pg[p,gen_id]) + gen["Dq"][p]*(gen["qmax"][p] - qg[p,gen_id]))
-
             end
-
         end
     end
-
 end
 
 
@@ -85,7 +116,12 @@ for (id, generator) in ref[:gen]
     pmax = get(generator, "pmax", fill( Inf, N));  pmax = isempty(size(pmax)) ? [pmax] : pmax
     qmin = get(generator, "qmin", fill(-Inf, N));  qmin = isempty(size(qmin)) ? [qmin] : qmin
     qmax = get(generator, "qmax", fill( Inf, N));  qmax = isempty(size(qmax)) ? [qmax] : qmax
-    
+
+    # =========================================================================
+    # STATCOM P-exchange flag (mutually exclusive with the PV/VVC path below)
+    # =========================================================================
+    is_statcom_p_exchange = get(generator, "statcom_p_exchange", false)
+
     # constraint_mc_generator_current(pm, id)
     if configuration==PMD.WYE || length(pmin)==1 || nphases==1
         if explicit_neutral
@@ -95,62 +131,62 @@ for (id, generator) in ref[:gen]
             phases = connections
             n = 4
         end
-        
-        # @show id  # removed: pure debug noise, not needed
+
         crg_bus[id] = JuMP.Containers.DenseAxisArray([crg[phases,id]..., -sum(crg[phases,id])], connections)
         cig_bus[id] = JuMP.Containers.DenseAxisArray([cig[phases,id]..., -sum(cig[phases,id])], connections)
 
         nonInf_pmin_pmax_idx = [idx for (idx,p) in enumerate(phases) if pmin[idx].>-Inf || pmax[idx].<Inf]
         nonInf_pmin_pmax_p = [p for (idx,p) in enumerate(phases) if pmin[idx].>-Inf || pmax[idx].<Inf]
-        # JuMP.@constraint(model, pmin[nonInf_pmin_pmax] .<= pg[nonInf_pmin_pmax,id] .<= pmax[nonInf_pmin_pmax] )
-        if !isempty(nonInf_pmin_pmax_idx)
-            # JuMP.@constraint(model, pmin[nonInf_pmin_pmax_idx] .<= pg[nonInf_pmin_pmax_p,id] .<= pmax[nonInf_pmin_pmax_idx] * 3 )
-            JuMP.@constraint(model, pmin[nonInf_pmin_pmax_idx] .<= pg[nonInf_pmin_pmax_p,id] .<= pmax[nonInf_pmin_pmax_idx])
-            JuMP.@constraint(model, sum(pg[nonInf_pmin_pmax_p,id]) .<= sum(pmax[nonInf_pmin_pmax_idx]) )
+
+        if is_statcom_p_exchange
+            # STATCOM P-exchange path: loose safety box only. The real
+            # limiting constraints are the S^2 capability + DC-bus coupling
+            # constraints added below, after pg/qg are linked to crg/cig.
+            if !isempty(nonInf_pmin_pmax_idx)
+                JuMP.@constraint(model, pmin[nonInf_pmin_pmax_idx] .<= pg[nonInf_pmin_pmax_p,id] .<= pmax[nonInf_pmin_pmax_idx])
+            end
+        else
+            # Original box-bound path, unchanged, for all other generators
+            # (PV -- including VVC PV -- and plain Q-only STATCOMs alike).
+            if !isempty(nonInf_pmin_pmax_idx)
+                JuMP.@constraint(model, pmin[nonInf_pmin_pmax_idx] .<= pg[nonInf_pmin_pmax_p,id] .<= pmax[nonInf_pmin_pmax_idx])
+                JuMP.@constraint(model, sum(pg[nonInf_pmin_pmax_p,id]) .<= sum(pmax[nonInf_pmin_pmax_idx]) )
+            end
         end
 
         nonInf_qmin_qmax_idx = [idx for (idx,p) in enumerate(phases) if qmin[idx].>-Inf || qmax[idx].<Inf]
         nonInf_qmin_qmax_p = [p for (idx,p) in enumerate(phases) if qmin[idx].>-Inf || qmax[idx].<Inf]
         if !isempty(nonInf_qmin_qmax_idx)
-            # JuMP.@constraint(model, qmin[nonInf_qmin_qmax_idx] * 3 .<= qg[nonInf_qmin_qmax_p,id] .<= qmax[nonInf_qmin_qmax_idx] * 3 )
             JuMP.@constraint(model, qmin[nonInf_qmin_qmax_idx] .<= qg[nonInf_qmin_qmax_p,id] .<= qmax[nonInf_qmin_qmax_idx] )
             JuMP.@constraint(model, sum(qmin[nonInf_qmin_qmax_idx]) .<= sum(qg[nonInf_qmin_qmax_p,id]) .<= sum(qmax[nonInf_qmin_qmax_idx]) )
         end
-        
+
         if explicit_neutral
             JuMP.@constraint(model, pg[phases,id] .==  (vr[phases,bus_id] .- vr[n,bus_id]) .* crg[phases,id] .+ (vi[phases,bus_id] .- vi[n,bus_id]) .* cig[phases,id])
             JuMP.@constraint(model, qg[nonInf_qmin_qmax_p,id] .== -(vr[nonInf_qmin_qmax_p,bus_id] .- vr[n,bus_id]) .* cig[nonInf_qmin_qmax_p,id] .+ (vi[nonInf_qmin_qmax_p,bus_id] .- vi[n,bus_id]) .* crg[nonInf_qmin_qmax_p,id])
-            # JuMP.@constraint(model, qg[phases,id] .== -(vr[phases,bus_id] .- vr[n,bus_id]) .* cig[phases,id] .+ (vi[phases,bus_id] .- vi[n,bus_id]) .* crg[phases,id])
         else
             JuMP.@constraint(model, pg[phases,id] .==  vr[phases,bus_id] .* crg[phases,id] .+ vi[phases,bus_id] .* cig[phases,id])
             JuMP.@constraint(model, qg[nonInf_qmin_qmax_p,id] .== -vr[nonInf_qmin_qmax_p,bus_id] .* cig[nonInf_qmin_qmax_p,id] .+ vi[nonInf_qmin_qmax_p,bus_id] .* crg[nonInf_qmin_qmax_p,id])
-            # JuMP.@constraint(model, qg[phases,id] .== -(vr[phases,bus_id] .- vr[n,bus_id]) .* cig[phases,id] .+ (vi[phases,bus_id] .- vi[n,bus_id]) .* crg[phases,id])
         end
 
         # ══════════════════════════════════════════════════════════════
-        # NEW: joint apparent-power capability constraint + Volt-Var droop
-        #
-        #   Only fires for PV gens carrying an "s_rating" field (set by
-        #   the updated add_pv! in single_phase_pv_vvc.jl). STATCOM gens
-        #   have no such field, so get(...) is skipped for them entirely
-        #   — they keep the plain box-bound behavior from above, unchanged.
+        # PV PATCH: joint apparent-power capability constraint + Volt-Var
+        # droop. Only fires for PV gens carrying an "s_rating" field. Does
+        # not touch STATCOM gens (no such field) or fire alongside the
+        # STATCOM patch below -- guards are mutually exclusive.
         # ══════════════════════════════════════════════════════════════
         if get(generator, "type", "") == "PV" && haskey(generator, "s_rating")
             s_rating = generator["s_rating"]   # scalar, per-unit apparent power
 
             for p in phases
-                # (1) Joint P^2 + Q^2 <= S^2 capability curve — replaces the
+                # (1) Joint P^2 + Q^2 <= S^2 capability curve -- replaces the
                 # independent pmax/qmax box for this unit. Matches Eq. (1p),
-                # Quiertant et al. 2023, and the same shape already used
-                # above for branch thermal limits (pf_idx.^2+qf_idx.^2<=rate_a.^2).
+                # Quiertant et al. 2023.
                 #JuMP.@constraint(model, pg[p,id]^2 + qg[p,id]^2 <= s_rating^2)
                 JuMP.@constraint(model, (pg[p,id]/s_rating)^2 + (qg[p,id]/s_rating)^2 <= 1)
 
                 # (2) Local Volt-Var droop (only if this unit has it enabled)
                 if get(generator, "vvc", false)
-                    # [VVC DIAGNOSTIC] print removed here — it already did its
-                    # job confirming this block executes. Re-add if needed:
-                    # println("    [VVC] droop applied: gen=$(id) phase=$(p) bus=$(bus_id)")
                     v1   = generator["vvc_v1"]
                     v2   = generator["vvc_v2"]
                     v3   = generator["vvc_v3"]
@@ -158,27 +194,18 @@ for (id, generator) in ref[:gen]
                     qbar = generator["vvc_qbar"] * s_rating
 
                     # Phase-to-neutral voltage magnitude at THIS unit's own
-                    # bus/phase only. No other bus/unit appears anywhere in
-                    # this block — that's what makes the control local.
+                    # bus/phase only -- keeps the control local.
                     vm_p = JuMP.@variable(model, base_name="vm_pv_$(id)_$(p)", lower_bound=0)
                     JuMP.@constraint(model,
                         vm_p^2 == (vr[p,bus_id]-vr[n,bus_id])^2 + (vi[p,bus_id]-vi[n,bus_id])^2)
 
                     # Exact piecewise Volt-Var droop, Eq. (4) Quiertant et al.
-                    # 2023 / Eq. (4) Mhanna et al. VVWO paper — written as a
-                    # SUM OF TWO CLIPPED RAMPS instead of a registered custom
-                    # operator, since min/max of nonlinear expressions are
-                    # BUILT INTO JuMP's nonlinear system natively (no
-                    # @operator/register call needed, avoiding the module-
-                    # scoping fragility that approach has when included deep
-                    # inside a package function rather than at script
-                    # top-level). Verified algebraically exact against the
-                    # original 5-branch piecewise function (zero error across
-                    # the full voltage range) before using it here:
-                    #   term_a: qbar for v<=v1, ramps to 0 by v2, 0 above v2
-                    #   term_b: 0 below v3, ramps to -qbar by v4, -qbar above
-                    #   sum reproduces the original function exactly, since
-                    #   the two terms' active ranges never overlap.
+                    # 2023 / Eq. (4) Mhanna et al. VVWO paper -- written as a
+                    # sum of two clipped ramps (min/max of nonlinear
+                    # expressions are native to JuMP's nonlinear system, no
+                    # @operator/register call needed). Verified algebraically
+                    # exact against the original 5-branch piecewise function
+                    # (zero error across the full voltage range).
                     term_a = JuMP.@expression(model,
                         min(max(qbar*(v2-vm_p)/(v2-v1), 0.0), qbar))
                     term_b = JuMP.@expression(model,
@@ -186,6 +213,33 @@ for (id, generator) in ref[:gen]
                     JuMP.@constraint(model, qg[p,id] == term_a + term_b)
                 end
             end
+        end
+
+        # ══════════════════════════════════════════════════════════════
+        # STATCOM PATCH: inter-phase P-exchange -- per-phase S^2 capability
+        # + DC-bus coupling. Must come after the pg/qg equality constraints
+        # above (references pg/qg as already-linked expressions), and only
+        # fires for generators flagged statcom_p_exchange=true.
+        # ══════════════════════════════════════════════════════════════
+        if is_statcom_p_exchange
+            s_rated = get(generator, "s_rated", fill(Inf, length(phases)))
+            s_rated = isempty(size(s_rated)) ? fill(s_rated, length(phases)) : s_rated
+            p_loss  = get(generator, "p_loss", 0.0)
+
+            # (a) Per-phase joint capability: pg^2 + qg^2 <= s_rated^2.
+            # Normalized so the constraint is O(1) regardless of s_rated's
+            # absolute pu magnitude (avoids Ipopt's constr_viol_tol silently
+            # not enforcing a tiny-scale unnormalized version). Anonymous
+            # constraint -- required when more than one P-exchange STATCOM
+            # is present, since JuMP won't let a named container be
+            # re-registered across loop iterations.
+            JuMP.@constraint(model, [p in phases],
+            (pg[p,id]/s_rated[findfirst(==(p), phases)])^2
+          + (qg[p,id]/s_rated[findfirst(==(p), phases)])^2 <= 1)
+
+            # (b) DC-bus coupling: sum of active power across all three
+            # phases must equal zero (lossless) or p_loss.
+            JuMP.@constraint(model, sum(pg[phases,id]) == p_loss)
         end
 
     else ## configuration==PMD.DELTA
@@ -232,20 +286,6 @@ for (i, branch) in ref[:branch]
 
     c_rating = branch["c_rating_a"]
 
-    # # if i in pv_gen_ids && multileg && multiplexing
-    # if i == 2 && multileg && multiplexing
-    #     Sbase = ref[:settings]["sbase"]   # p.u.
-    #     Sbace_Factor = ref[:settings]["power_scale_factor"]
-    #     Vbase = 0.2309  # [kV]
-    #     Vbase_Factor = ref[:settings]["voltage_scale_factor"]
-    #     Ibase = (Sbase * Sbace_Factor) / (Vbase * Vbase_Factor)  #[kA]
-    #     vbase_max = 253
-        
-    #     gen_id = 1
-    #     c_rating_max = 3*ref[:gen][gen_id]["pmax"][1] * 1000 / (vbase_max*3) / Ibase  # TODO create a mapping of a pv gen to its internal branch, save into ref
-    #     c_rating = JuMP.@expression(model,  sum(c_rating_max) * Array(bg["$gen_id"]) * alpha_g["$gen_id"])
-    # end
-
     vr_fr = [vr[idx,f_bus] for (idx,v) in enumerate(vr[:,f_bus])]
     vi_fr = [vi[idx,f_bus] for (idx,v) in enumerate(vi[:,f_bus])]
     vr_to = [vr[idx,t_bus] for (idx,v) in enumerate(vr[:,t_bus])]
@@ -276,7 +316,7 @@ for (i, branch) in ref[:branch]
     ### constraint_mc_bus_voltage_drop
     JuMP.@constraint(model, vr_to .== vr_fr .- r*csr_fr .+ x*csi_fr)
     JuMP.@constraint(model, vi_to .== vi_fr .- r*csi_fr .- x*csr_fr)
-    
+
     ### constraint_mc_branch_current_limit
     cnds_finite_rating = [c for (c,r) in enumerate(c_rating) if r!==Inf]
     JuMP.@constraint(model, cr_fr[cnds_finite_rating].^2 .+ ci_fr[cnds_finite_rating].^2 .<= c_rating[cnds_finite_rating].^2)
@@ -304,9 +344,9 @@ for (id, load) in ref[:load]
     bus_id = load["load_bus"]
     bus = ref[:bus][bus_id]
     configuration = load["configuration"]
-    local connections = load["connections"]
+    connections = load["connections"]
     load_model = load["model"]
-    local a, alpha, b, beta = PMD._load_expmodel_params(load, bus)
+    a, alpha, b, beta = PMD._load_expmodel_params(load, bus)
 
     int_dim = RPMD._infer_int_dim_unit(load, false)
     if configuration==PMD.WYE || int_dim==1
@@ -333,25 +373,23 @@ for (id, load) in ref[:load]
             error("Load model $model for load $id is not supported by this formulation.")
         end
 
-        JuMP.@constraint(model, Vector{JuMP.AffExpr}(crd[phases,id]) .== 
+        JuMP.@constraint(model, Vector{JuMP.AffExpr}(crd[phases,id]) .==
                 a .* vr_pn .* (vr_pn.^2 .+ vi_pn.^2).^(alpha/2 .-1)
             .+ b .* vi_pn .* (vr_pn.^2 .+ vi_pn.^2).^(beta/2 .-1))
-        JuMP.@constraint(model, Vector{JuMP.AffExpr}(cid[phases,id]) .== 
+        JuMP.@constraint(model, Vector{JuMP.AffExpr}(cid[phases,id]) .==
                 a .* vi_pn .* (vr_pn.^2 .+ vi_pn.^2).^(alpha/2 .-1)
             .- b .* vr_pn .* (vr_pn.^2 .+ vi_pn.^2).^(beta/2 .-1))
-        # JuMP.@constraint(model, pd .==  vr_pn .* Vector{JuMP.AffExpr}(crd[phases,id]) .+ vi_pn .* Vector{JuMP.AffExpr}(cid[p,id]))
-        # JuMP.@constraint(model, qd .== -vr_pn .* Vector{JuMP.AffExpr}(cid[p,id]) .+ vi_pn .* Vector{JuMP.AffExpr}(crd[p,id]))
-        
+
         crd_bus[id] = JuMP.Containers.DenseAxisArray([Vector{JuMP.AffExpr}(crd[phases,id])..., -sum(Vector{JuMP.AffExpr}(crd[phases,id]))], connections)
         cid_bus[id] = JuMP.Containers.DenseAxisArray([Vector{JuMP.AffExpr}(cid[phases,id])..., -sum(Vector{JuMP.AffExpr}(cid[phases,id]))], connections)
-        
+
     else
         phases = connections
         phases_next = [connections[2:end]..., connections[1]]
         P = length(connections)
         idxs = 1:P
         idxs_prev = [idxs[end], idxs[1:end-1]...]
-        
+
         vrd = Vector{JuMP.AffExpr}(vr[phases,bus_id]) .- Vector{JuMP.AffExpr}(vr[phases_next,bus_id])
         vid = Vector{JuMP.AffExpr}(vi[phases,bus_id]) .- Vector{JuMP.AffExpr}(vi[phases_next,bus_id])
 
@@ -372,19 +410,17 @@ for (id, load) in ref[:load]
             error("Load model $model for load $id is not supported by this formulation.")
         end
 
-        JuMP.@constraint(model, Vector{JuMP.AffExpr}(crd[idxs,id]) .== 
-                    a[idxs] .* vrd[idxs,bus_id] .* (vrd[idxs,bus_id].^2 .+ vid[idxs,bus_id].^2).^(alpha[idxs]/2 .-1) .+ 
+        JuMP.@constraint(model, Vector{JuMP.AffExpr}(crd[idxs,id]) .==
+                    a[idxs] .* vrd[idxs,bus_id] .* (vrd[idxs,bus_id].^2 .+ vid[idxs,bus_id].^2).^(alpha[idxs]/2 .-1) .+
                     b[idxs] .* vid[idxs,bus_id] .* (vrd[idxs,bus_id].^2 .+ vid[idxs,bus_id].^2).^(beta[idxs]/2 .-1))
-        JuMP.@constraint(model, Vector{JuMP.AffExpr}(cid[idxs,id]) .== 
-                    a[idxs] .* vid[idxs,bus_id] .* (vrd[idxs,bus_id].^2 .+ vid[idxs,bus_id].^2).^(alpha[idxs]/2 .-1) .- 
+        JuMP.@constraint(model, Vector{JuMP.AffExpr}(cid[idxs,id]) .==
+                    a[idxs] .* vid[idxs,bus_id] .* (vrd[idxs,bus_id].^2 .+ vid[idxs,bus_id].^2).^(alpha[idxs]/2 .-1) .-
                     b[idxs] .* vrd[idxs,bus_id] .* (vrd[idxs,bus_id].^2 .+ vid[idxs,bus_id].^2).^(beta[idxs]/2 .-1))
-        # JuMP.@constraint(model, pd[idxs] .==  vrd[idxs,bus_id] .* Vector{JuMP.AffExpr}(crd[idxs,id]) .+ vid[idxs,bus_id] .* Vector{JuMP.AffExpr}(cid[idxs,id]))
-        # JuMP.@constraint(model, qd[idxs] .== -vrd[idxs,bus_id] .* Vector{JuMP.AffExpr}(cid[idxs,id]) .+ vid[idxs,bus_id] .* Vector{JuMP.AffExpr}(crd[idxs,id]))
 
         crd_bus[id] = JuMP.Containers.DenseAxisArray(Vector{JuMP.AffExpr}(crd[idxs,id]).-Vector{JuMP.AffExpr}(crd[idxs_prev,id]), connections)
         cid_bus[id] = JuMP.Containers.DenseAxisArray(Vector{JuMP.AffExpr}(cid[idxs,id]).-Vector{JuMP.AffExpr}(cid[idxs_prev,id]), connections)
     end
-    
+
 end
 crd_bus = JuMP.Containers.DenseAxisArray([t in crd_bus[i].axes[1] ? crd_bus[i][t] : 0 for t in 1:n_ph, i in keys(ref[:load])], 1:n_ph, keys(ref[:load]))
 cid_bus = JuMP.Containers.DenseAxisArray([t in cid_bus[i].axes[1] ? cid_bus[i][t] : 0 for t in 1:n_ph, i in keys(ref[:load])], 1:n_ph, keys(ref[:load]))
@@ -408,17 +444,17 @@ for (i, bus) in ref[:bus]
     ungrounded_terminals = [t for (idx,t) in enumerate(terminals) if !grounded[idx]]
 
     JuMP.@constraint(model, sum(Vector{JuMP.AffExpr}(cr_bus[ungrounded_terminals,a]) for (a, conns) in bus_arcs) .==
-                            sum(Vector{JuMP.AffExpr}(crg_bus[ungrounded_terminals,g]) for (g, conns) in bus_gens) .- 
+                            sum(Vector{JuMP.AffExpr}(crg_bus[ungrounded_terminals,g]) for (g, conns) in bus_gens) .-
                             sum(Vector{JuMP.AffExpr}(crd_bus[ungrounded_terminals,d]) for (d, conns) in bus_loads) .-
-                            Gt[ungrounded_terminals,ungrounded_terminals] * Vector{JuMP.AffExpr}(vr[ungrounded_terminals,i]) .- 
+                            Gt[ungrounded_terminals,ungrounded_terminals] * Vector{JuMP.AffExpr}(vr[ungrounded_terminals,i]) .-
                                 Bt[ungrounded_terminals,ungrounded_terminals] * Vector{JuMP.AffExpr}(vi[ungrounded_terminals,i])
                             )
-    
+
     JuMP.@constraint(model, sum(Vector{JuMP.AffExpr}(ci_bus[ungrounded_terminals,a]) for (a, conns) in bus_arcs) .==
-                            sum(Vector{JuMP.AffExpr}(cig_bus[ungrounded_terminals,g]) for (g, conns) in bus_gens) .- 
+                            sum(Vector{JuMP.AffExpr}(cig_bus[ungrounded_terminals,g]) for (g, conns) in bus_gens) .-
                             sum(Vector{JuMP.AffExpr}(cid_bus[ungrounded_terminals,d]) for (d, conns) in bus_loads) .-
                             Gt[ungrounded_terminals,ungrounded_terminals] * Vector{JuMP.AffExpr}(vi[ungrounded_terminals,i]) .+
                                 Bt[ungrounded_terminals,ungrounded_terminals] * Vector{JuMP.AffExpr}(vr[ungrounded_terminals,i])
                             )
-    
+
 end

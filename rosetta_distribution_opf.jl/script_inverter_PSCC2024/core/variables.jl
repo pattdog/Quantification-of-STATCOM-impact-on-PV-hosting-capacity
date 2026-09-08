@@ -1,3 +1,4 @@
+#println("### variables.jl LOADED - version A ###")
 terminals = Dict(i => bus["terminals"][(!).(bus["grounded"])] for (i, bus) in ref[:bus])
 v_start = [exp.(im.*collect(0:-1:-2)*2/3*pi) ; 0]
 
