@@ -73,7 +73,8 @@ ipopt_solver = JuMP.optimizer_with_attributes(
     "constr_viol_tol" => 1e-3,       # Allow tiny overlaps in constraints
     
     # Advanced Scaling - Helps with 4-wire numerical issues
-    "nlp_scaling_method" => "gradient-based", 
+    #"nlp_scaling_method" => "gradient-based", 
+    "nlp_scaling_method" => "none", 
 )
 
 data_path = "./rosetta_distribution_opf.jl/data/ENWL_4w_Network1_Feeder1/Master.dss"
@@ -100,7 +101,7 @@ function load_base_network(data_path; load_multiplier=1.0, enforce_bounds=true)
         data_eng, multinetwork=false, kron_reduce=false, phase_project=false,
         make_pu=false   # skip PMD's own pu conversion
     )
-    PMD.make_per_unit!(data_math; sbase=1000.0)   # do it yourself, with your chosen base
+    PMD.make_per_unit!(data_math; sbase=10.0)   # do it yourself, with your chosen base
 
     PMD.add_start_vrvi!(data_math)
 
@@ -231,9 +232,10 @@ function build_and_solve(data_math)
     end
     # === END ADD ===
 
-    include("./core/constraints_PBalance.jl")
+    #include("./core/constraints_PBalance.jl")
+    include("./core/constraints_unified.jl")
 
-    global objective = "loss"
+    global objective = "VUF"
     global objective_aggregation = :max   # or :sum
     println("    [objective = \"$objective\"]")
     include("./core/objectives_FIXED.jl")
