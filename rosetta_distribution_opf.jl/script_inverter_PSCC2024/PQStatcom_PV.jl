@@ -69,7 +69,8 @@ ipopt_solver = JuMP.optimizer_with_attributes(
     "constr_viol_tol" => 1e-3,       # Allow tiny overlaps in constraints
     
     # Advanced Scaling - Helps with 4-wire numerical issues
-    "nlp_scaling_method" => "gradient-based", 
+    #"nlp_scaling_method" => "gradient-based", 
+    "nlp_scaling_method" => "none", 
 )
 
 data_path = "./rosetta_distribution_opf.jl/data/ENWL_4w_Network1_Feeder1/Master.dss"
@@ -86,7 +87,7 @@ pu_to_kvar(q_pu, sbase_kva)   = q_pu * sbase_kva
 # Network loader -- sbase fix via make_pu=false + make_per_unit!(sbase=...),
 # validated in the STATCOM load-multiplier sweep.
 # -----------------------------------------------------------------------
-function load_base_network(data_path; load_multiplier=1.0, enforce_bounds=true, sbase_kva=1_000.0)
+function load_base_network(data_path; load_multiplier=1.0, enforce_bounds=true, sbase_kva=100)
     data_eng  = PMD.parse_file(data_path, transformations=[PMD.transform_loops!])
 
     data_math = PMD.transform_data_model(
@@ -317,9 +318,9 @@ function build_and_solve(data_math)
     end
     # === END ADD ===
 
-    include("./core/constraints_PBalance.jl")
-
-    global objective = "IUF"
+    #include("./core/constraints_PBalance.jl")
+    include("./core/constraints_unified.jl")
+    global objective = "VUF2"
     println("    [objective = \"$objective\"]")
 
     include("./core/objectives_FIXED.jl")
@@ -420,9 +421,9 @@ end
 # -----------------------------------------------------------------------
 # Sweep -- load_multiplier fixed at 1.0; PV size is the stress axis.
 # -----------------------------------------------------------------------
-PV_KW_LEVELS  = [1.0, 3.0, 5.0, 7.0, 10.0]
+PV_KW_LEVELS  = [1.0, 3.0, 5.0, 7.0, 10.0, 25, 40]
 N_STATCOMS    = 10
-STATCOM_KVAR  = 20   # total nameplate per unit, kVAr
+STATCOM_KVAR  = 40   # total nameplate per unit, kVAr
 scenarios = [
     ("A: PV only",                 :none),
     ("B: PV + STATCOM Q-only",     :qonly),
