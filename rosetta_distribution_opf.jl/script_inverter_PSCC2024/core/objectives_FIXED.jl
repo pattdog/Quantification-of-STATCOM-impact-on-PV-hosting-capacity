@@ -123,11 +123,10 @@ elseif objective == "loss"
         no_targets_bypass!()
     else
         obj_loss = JuMP.@expression(model, sum(
-            sqrt(ref[:branch][l]["br_r"][c]^2 + ref[:branch][l]["br_x"][c]^2) *
-            (csr[c,l]^2 + csi[c,l]^2)
-            for l in loss_branches for c in 1:size(ref[:branch][l]["br_r"],1)
-        ))
-        JuMP.@objective(model, Min, obj_loss)
+            ref[:branch][l]["br_r"][a,b] * (csr[a,l]*csr[b,l] + csi[a,l]*csi[b,l])
+            for l in loss_branches
+            for a in 1:size(ref[:branch][l]["br_r"],1)
+            for b in 1:size(ref[:branch][l]["br_r"],1)))
     end
 
 # ==============================================================================

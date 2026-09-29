@@ -1,4 +1,5 @@
 Clear
+Set defaultbasefreq=50
 New Circuit.3Bus_example
 !  define a really stiff source
 ~ basekv=0.4   pu=0.9959  MVAsc1=1e6  MVAsc3=1e6 basemva=0.5
@@ -24,13 +25,12 @@ New Line.Quad    Bus1=Primary.1.2.3  loadbus.1.2.3  linecode = 4/0QUAD  length=1
 
 !Loads - single phase
 
-New Load.L1 phases=3  loadbus.1.2.3   ( 0.4 3 sqrt / )   kW=30   kvar=3  model=1
+New Load.L1 phases=1 bus1=loadbus.1 kV=0.2309   ( 0.4 3 sqrt / )   kW=30   kvar=3  model=1
 
 
 
 Set voltagebases=[0.4]
 Set tolerance=0.000001
-set defaultbasefreq=50
 Calcvoltagebases
 
 Solve

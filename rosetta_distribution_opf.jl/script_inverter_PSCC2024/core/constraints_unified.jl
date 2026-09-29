@@ -68,8 +68,19 @@ for (i, bus) in ref[:bus]
 
     v_neg_seq_real = JuMP.@expression(model, Tre[3,:]' * Array(vr[1:3,i]) - Tim[3,:]' * Array(vi[1:3,i]))
     v_neg_seq_imag = JuMP.@expression(model, Tre[3,:]' * Array(vi[1:3,i]) + Tim[3,:]' * Array(vr[1:3,i]))
-    JuMP.@constraint(model, v_neg_seq_real^2 + v_neg_seq_imag^2 <= 0.02^2)
-
+    #JuMP.@constraint(model, v_neg_seq_real^2 + v_neg_seq_imag^2 <= 0.02^2)
+    v2_cap = @isdefined(V2_CAP) ? V2_CAP : 0.02
+    v_pos_seq_real = JuMP.@expression(model, Tre[2,:]' * Array(vr[1:3,i]) - Tim[2,:]' * Array(vi[1:3,i]))
+    v_pos_seq_imag = JuMP.@expression(model, Tre[2,:]' * Array(vi[1:3,i]) + Tim[2,:]' * Array(vr[1:3,i]))
+    
+    if @isdefined(VUF_CAP)
+        if isfinite(VUF_CAP)
+            JuMP.@constraint(model, v_neg_seq_real^2 + v_neg_seq_imag^2
+                                 <= VUF_CAP^2 * (v_pos_seq_real^2 + v_pos_seq_imag^2))
+        end
+    else
+        JuMP.@constraint(model, v_neg_seq_real^2 + v_neg_seq_imag^2 <= 0.02^2 * (v_pos_seq_real^2 + v_pos_seq_imag^2))
+    end
     if haskey(bus, "type")
         if bus["type"] == "GFM"
             if 4 in terminals
