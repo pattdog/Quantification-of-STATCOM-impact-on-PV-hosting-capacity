@@ -1,0 +1,185 @@
+using Pkg
+Pkg.activate("./")
+using rosetta_distribution_opf
+import PowerModelsDistribution
+import InfrastructureModels
+using Ipopt
+using JuMP  # bl/array_nl
+import LinearAlgebra: diag, diagm
+
+const PMD = PowerModelsDistribution
+const RPMD = rosetta_distribution_opf
+const IM = InfrastructureModels
+
+
+##
+data_path = "./data/ENWL_4w_Network1_Feeder1/Master.dss"
+
+#ipopt_solver = JuMP.optimizer_with_attributes(Ipopt.Optimizer, "print_level"=>0, "sb"=>"yes","warm_start_init_point"=>"yes")
+ipopt_solver = JuMP.optimizer_with_attributes(
+    Ipopt.Optimizer,
+    "print_level" => 5,
+    "max_iter" => 5000,
+    "tol" => 1e-4,
+    "dual_inf_tol" => 1.0,
+    "constr_viol_tol" => 1e-4,
+    "acceptable_tol" => 1e-2,
+    "acceptable_dual_inf_tol" => 1.0,
+    "acceptable_constr_viol_tol" => 1e-4,
+    "acceptable_iter" => 10,
+    # Hessian regularisation — stop it hitting the floor
+    "min_hessian_perturbation" => 1e-3,      # raise from 1e-4
+    "max_hessian_perturbation" => 1e+4,      # allow larger perturbations
+    "perturb_inc_fact" => 4.0,               # increase perturbation faster
+    "perturb_dec_fact" => 0.333,             # decrease slower
+    # Line search
+    "alpha_red_factor" => 0.25,              # more aggressive backtracking
+    "max_soc" => 4,                          # more second order correction attempts
+    "warm_start_init_point" => "yes",
+    "warm_start_bound_push" => 1e-6,
+    "warm_start_mult_bound_push" => 1e-6,
+    "sb" => "yes"
+)
+# data_eng = PMD.parse_file(data_path, transformations=[PMD.remove_all_bounds!, PMD.transform_loops!, PMD.reduce_lines!])
+data_eng = PMD.parse_file(data_path, transformations=[PMD.transform_loops!])
+# RPMD.pv1_correction!(data_eng)
+data_eng["settings"]["sbase_default"] = 1
+data_eng["voltage_source"]["source"]["rs"] *= 0
+data_eng["voltage_source"]["source"]["xs"] *= 0
+data_math = PMD.transform_data_model(data_eng, multinetwork=false, kron_reduce=false, phase_project=false)
+
+for (i, bus) in data_math["bus"]
+    bus["vmin"] = [0.85 * ones(3) ; 0 ] # keep 0.9-1.1
+    bus["vmax"] = [1.15 * ones(3) ; Inf]
+    bus["x"] = parse(Int, i)
+    bus["y"] = parse(Int, i)
+end
+
+for (i, load) in data_math["load"]
+    load["pd"] *= 1.5
+    load["qd"] *= 1.5
+end
+
+data_math["gen"]["1"]["cost"] = [1000 0]
+
+include("./core/inverter_loss_branch.jl")
+
+for i = 1:20:length(data_math["load"])
+    load = data_math["load"]["$i"]
+    pd = load["pd"][1]
+    gen_id = length(data_math["gen"]) + 1
+    data_math["gen"]["$gen_id"] = deepcopy(data_math["gen"]["1"])
+    Smax = 2 * ceil(pd) * ones(3)
+    gen = data_math["gen"]["$gen_id"]
+    gen["gen_bus"] = copy(load["load_bus"])
+    gen["smax"] = Smax
+    gen["pmax"] = 0.8 * Smax
+    gen["pmin"] = 0.0 * Smax
+    gen["qmax"] = sqrt.(Smax.^2 - gen["pmax"].^2)
+    gen["qmin"] = -gen["qmax"]
+    gen["cost"] = [10 0]
+    gen["type"] = "GFM"
+
+    gen["pg"] = gen["pmax"]/2   # pg_set[:,gen_id]
+    gen["qg"] = zeros(3)        # qg_set[:,gen_id]
+    gen["Dp"] = 0.01 * ones(3)
+    gen["Dq"] = 0.02 * ones(3)
+
+    RPMD.add_inverter_losses!(data_math, gen_id, GFM=true)
+end
+
+
+for i = 31:20:length(data_math["load"])
+    load = data_math["load"]["$i"]
+    pd = load["pd"][1]
+    gen_id = length(data_math["gen"]) + 1
+    data_math["gen"]["$gen_id"] = deepcopy(data_math["gen"]["1"])
+    Smax = 2 * ceil(pd) * ones(3)
+    gen = data_math["gen"]["$gen_id"]
+    gen["gen_bus"] = copy(load["load_bus"])
+    gen["smax"] = Smax
+    gen["pmax"] = 0.8 * Smax
+    gen["pmin"] = 0.0 * Smax
+    gen["qmax"] = sqrt.(Smax.^2 - gen["pmax"].^2)
+    gen["qmin"] = -gen["qmax"]
+    gen["cost"] = [10 0]
+    gen["type"] = "GFL-4w"
+
+    RPMD.add_inverter_losses!(data_math, gen_id)
+end
+
+for i in [11]
+    load = data_math["load"]["$i"]
+    pd = load["pd"][1]
+    gen_id = length(data_math["gen"]) + 1
+    data_math["gen"]["$gen_id"] = deepcopy(data_math["gen"]["1"])
+    gen = data_math["gen"]["$gen_id"]
+    gen["name"] = "GFL_3w_$gen_id"
+    Smax = 2 * ceil(pd) * ones(3)
+    gen["gen_bus"] = load["load_bus"]
+    gen["smax"] = Smax
+    gen["pmax"] = 0.8 * Smax
+    gen["pmin"] = 0.0 * Smax
+    gen["qmax"] = sqrt.(Smax.^2 - gen["pmax"].^2)
+    gen["qmin"] = -gen["qmax"]
+    gen["cost"] = [10 0]
+    gen["type"] = "GFL-3w"
+
+    RPMD.add_inverter_losses!(data_math, gen_id, three_wire=true)
+end
+
+
+ref = IM.build_ref(data_math, PMD.ref_add_core!, PMD._pmd_global_keys, PMD.pmd_it_name)[:it][:pmd][:nw][0]
+
+##
+
+control_forming = "no_setpoint_droop"
+# control_forming = "setpoint"
+# control_forming = "droop"
+# control_forming = "nothing"
+
+objective = "cost"
+
+#model = JuMP.Model(Ipopt.Optimizer)
+model = JuMP.Model(ipopt_solver)
+
+include("./core/variables.jl")
+include("./core/constraints.jl")
+include("./core/objectives.jl")
+# include("./core/VV_VW_controls.jl")
+
+###
+JuMP.optimize!(model)
+status = JuMP.termination_status(model)
+@assert status in [LOCALLY_SOLVED, ALMOST_LOCALLY_SOLVED] "Solver failed with status: $status"
+obj_val_GFM = JuMP.objective_value(model)
+solve_time_GFM = JuMP.solve_time(model)
+
+
+v = value.(vr) .+ im * value.(vi)
+v_axes2 = v.axes[2]
+v012 = T * Array(v[1:3,:])
+v2 = v012[3,:]
+v2m_GFM = abs.(v2)
+v0m_GFM = abs.(v012[1,:])
+
+(v2m_max, idx) = findmax(v2m_GFM)
+idx_bus = v_axes2[idx]
+round.(abs.(v[:,idx_bus]), digits=4)
+round.(angle.(v[:,idx_bus])*180/pi, digits=2)
+
+c = value.(cr) .+ im * value.(ci)
+c_axes2 = c.axes[2]
+c012 = T * Array(c[1:3,:])
+c2 = c012[3,:]
+c2m = abs.(c2)
+
+# Print all bus voltages
+#println("\n=== Bus Voltage Results ===")
+#println("Bus | Phase A mag | Phase B mag | Phase C mag | Neutral mag | Phase A ang | Phase B ang | Phase C ang")
+#println("-"^110)
+#for i in sort(collect(keys(ref[:bus])))
+ #   v_mag_bus = round.(abs.(v[:, i]), digits=4)
+ #   v_ang_bus = round.(angle.(v[:, i]) .* 180/pi, digits=2)
+ #   println("Bus $i | $(v_mag_bus[1]) | $(v_mag_bus[2]) | $(v_mag_bus[3]) | $(v_mag_bus[4]) | $(v_ang_bus[1])° | $(v_ang_bus[2])° | $(v_ang_bus[3])°")
+#nd

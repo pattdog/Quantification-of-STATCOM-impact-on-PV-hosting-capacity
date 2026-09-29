@@ -1,0 +1,101 @@
+! Minimal 4-wire validation case for multi-phase power-exchange STATCOM
+! ===========================================================================
+! Purpose: smallest network that exhibits the phenomenon the P-STATCOM acts
+! on, so cause and effect can be shown before the 908-bus ENWL feeder.
+!
+! Modelling assumptions deliberately MATCHED to ENWL_network_1_Feeder_1_4wire
+! so the only difference between this case and the big one is size:
+!   - 4-conductor throughout (.1.2.3.4), neutral is an explicit conductor
+!   - stiff source (ISC ~ 100 kA), so all voltage drop is in the cables
+!   - MEN: near-zero bond at the substation, 10 ohm bond at the load bus
+!   - zero shunt capacitance (matches the Urquhart-derived linecodes)
+!
+! Deliberately DIFFERENT from ENWL:
+!   - 0.4 kV / 230 V nominal (Australian), not 0.416 kV. This file is at
+!     least self-consistent; the ENWL files mix 0.416 basekv with 0.2309
+!     loads. Switch to basekv=0.416 / kV=0.2402 if exact parity matters more.
+!
+! PLACEHOLDER: linecode LC_TOY below is representative LV cable, not measured
+! data. For anything going in the thesis, replace it with a real 4x4 from your
+! existing LineCode.txt (e.g. LC3) so the toy case inherits the same
+! impedance provenance as the feeder:
+!     Redirect LineCode.txt        ! then use Linecode=LC3 on both lines
+! ===========================================================================
+
+Clear
+
+Set DefaultBaseFreq=50
+
+! Source - stiff, matching the ENWL treatment
+! ---------------------------------------------------------------------------
+New Circuit.toy_3bus_4w basekv=0.4 pu=1.00 ISC3=100000 ISC1=100000
+
+! MEN bond at the substation (neutral to true earth)
+New Reactor.Grounding phases=1 bus1=sourcebus.4 bus2=sourcebus.0 R=0.0 X=1E-10
+
+! Linecode - 4x4, ohms per km at 50 Hz
+! ---------------------------------------------------------------------------
+! Diagonal: conductor self impedance incl. earth return.
+! Off-diagonal: mutual, dominated by the Carson earth-return term
+! (pi^2 * f * 1e-4 = 0.0493 ohm/km at 50 Hz).
+! Neutral (conductor 4) taken as full-size, same as the phases.
+New Linecode.LC_TOY nphases=4 basefreq=50 units=km
+~ rmatrix = ( 0.3650 | 0.0493  0.3650 | 0.0493  0.0493  0.3650 | 0.0493  0.0493  0.0493  0.3650 )
+~ xmatrix = ( 0.3000 | 0.2000  0.3000 | 0.2000  0.2000  0.3000 | 0.2000  0.2000  0.2000  0.3000 )
+~ cmatrix = ( 0 | 0  0 | 0  0  0 | 0  0  0  0 )
+
+! Lines - 400 m total, realistic LV feeder run
+! ---------------------------------------------------------------------------
+New Line.LINE1 Bus1=sourcebus.1.2.3.4 Bus2=midbus.1.2.3.4  phases=4 Linecode=LC_TOY Length=0.25 Units=km
+New Line.LINE2 Bus1=midbus.1.2.3.4    Bus2=loadbus.1.2.3.4 phases=4 Linecode=LC_TOY Length=0.15 Units=km
+
+! Loads - deliberately unbalanced, phase-to-neutral
+! ---------------------------------------------------------------------------
+! Vminpu/Vmaxpu widened so OpenDSS stays constant-power across the whole
+! range of interest. Without this, OpenDSS silently reverts to constant-Z
+! outside 0.95-1.05 while PMD does not, and the cross-check diverges for
+! reasons unrelated to the formulation.
+!
+! Scaling knob: multiply all three by ~1.5 to drive phase A below 0.90 pu
+! and create a violation the STATCOM has to remove.
+New Load.LOAD_A Phases=1 Bus1=loadbus.1.4 kV=0.2309 kW=12.0 PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+New Load.LOAD_B Phases=1 Bus1=loadbus.2.4 kV=0.2309 kW=4.0  PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+New Load.LOAD_C Phases=1 Bus1=loadbus.3.4 kV=0.2309 kW=2.0  PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+
+! MEN bond at the load bus - DELIBERATELY NOT DECLARED HERE
+! ---------------------------------------------------------------------------
+! The two-terminal finite-impedance form (bus1=loadbus.4 bus2=loadbus.0 R=10)
+! parses R correctly but materialises an explicit earth node, widening
+! conductor_ids to [1,2,3,4,5]. load_base_network hard-codes length-4
+! vmin/vmax, so that form breaks the pipeline.
+!
+! Load-bus MEN bonds are instead added in the ENGINEERING model by add_men!,
+! which builds them directly as ENG shunts on connections [4]. Pass
+! men_ohm=10.0 to load_base_network.
+!
+! The source-side Reactor.Grounding above is fine: near-zero impedance
+! collapses to a `grounded` flag on terminal 4 rather than a new terminal.
+
+! ===========================================================================
+! Everything below is OpenDSS runtime only. Strip or comment out before
+! parsing with PMD - keep a separate copy for the OpenDSS cross-check.
+! ===========================================================================
+
+Set voltagebases=[0.4]
+Calcvoltagebases
+
+Set tolerance=0.000001
+Set mode=Snap
+Solve
+
+Show Voltages LN Nodes
+Show Powers kVA Elements
+Closedi
+
+! Expected behaviour (verify, do not trust these figures):
+!   Ia ~ 55 A, Ib ~ 18 A, Ic ~ 9 A, neutral current ~42 A
+!   NEV at loadbus ~6 V (~0.026 pu), ~0 V at sourcebus
+!   Phase A LN at loadbus ~216 V (~0.94 pu)  - pulled DOWN
+!   Phase C LN at loadbus ~233 V (~1.01 pu)  - pushed UP by neutral shift
+! That spread is the thing the P-STATCOM should close. If phases A and C
+! come back near-equal, the unbalance is not reaching the model.

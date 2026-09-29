@@ -1,0 +1,151 @@
+! ===========================================================================
+! 4-BUS 4-WIRE LV VALIDATION NETWORK  (Australian MEN, 400/230 V, 50 Hz)
+! ===========================================================================
+! Small network for demonstrating cause and effect in multi-phase STATCOM
+! control before presenting the 908-bus feeder. Small enough that every
+! result can be checked by hand; structured so that the phenomena it
+! exhibits are the same ones the feeder exhibits.
+!
+! PARAMETER PROVENANCE -- every number below is chosen, not invented:
+!
+!   Customer demand   4.5 kVA ADMD per lot, @ 0.95 PF = 4.275 kW.
+!                     Energex Supply & Planning Manual LV design ADMD for
+!                     SEQ residential lots (Ergon quotes 4-5 kVA for the
+!                     equivalent regions). This is the DESIGN PEAK, so the
+!                     network below is at its design-maximum loading.
+!
+!   Customer count    21 lots (6 + 6 + 9). Total 89.8 kW.
+!
+!   Conductor         185 mm^2 Al 4-core LV mains, full-size neutral.
+!                     r20 = 0.164 ohm/km -> r75 = 0.210 ohm/km operating.
+!                     Carson earth-return term at 50 Hz adds 0.0493 ohm/km
+!                     to every self and mutual resistance:
+!                         pi^2 * f * 1e-4 = 0.0493
+!                     Reactances: 0.300 self / 0.220 mutual ohm/km, giving
+!                     a loop reactance of 0.08 ohm/km, typical for LV cable
+!                     at close conductor spacing.
+!
+!   Feeder length     150 + 150 + 250 = 550 m. Within the normal range for
+!                     an Australian LV distributor (roughly 200-800 m).
+!                     LENGTH IS THE STRESS KNOB: if more voltage stress is
+!                     wanted, lengthen the segments rather than inflating
+!                     loads or oversizing PV.
+!
+!   STATCOM           30 kVA, i.e. 10 kVA per converter leg. Chosen to sit
+!                     in the same class as commercially available LV
+!                     phase-balancing units (EcoJoule and similar are
+!                     30-40 kVA). Declared in the Julia script, not here.
+!
+! DESIGN INTENT -- one clean stress axis.
+!   mid1 and mid2 carry BALANCED background load (2 lots per phase each).
+!   endbus carries 9 lots whose PHASE ALLOCATION is the swept variable,
+!   from 3/3/3 (ideal) to 7/1/1 (badly allocated). Total demand is held
+!   constant at 89.8 kW throughout; only the allocation changes. Real LV
+!   feeders become unbalanced in exactly this way -- single-phase lots
+!   connected to whichever phase was convenient at the time.
+!
+! EXPECTED UNAIDED BEHAVIOUR (verify; do not trust these figures):
+!   3/3/3   Vmin 0.950   VUF 0.00%   loss 3.9%   In ~   0 A
+!   4/3/2   Vmin 0.919   VUF 0.79%   loss 4.2%   In ~  37 A
+!   5/3/1   Vmin 0.887   VUF 1.59%   loss 5.3%   In ~  75 A
+!   6/2/1   Vmin 0.852   VUF 2.17%   loss 6.7%   In ~ 107 A
+!   7/1/1   Vmin 0.814   VUF 2.93%   loss 9.1%   In ~ 147 A
+!   The 0.90 pu voltage limit is crossed before the 2% VUF limit.
+! ===========================================================================
+
+Clear
+
+Set DefaultBaseFreq=50
+
+! Source
+! ---------------------------------------------------------------------------
+! Stiff (ISC ~ 100 kA), matching the ENWL 4-wire treatment, so that all
+! voltage drop appears in the cables rather than upstream. The distribution
+! transformer is deliberately not modelled: this study is about the LV
+! feeder, and a stiff source makes the cable contribution unambiguous.
+New Circuit.lv_4bus_4w basekv=0.4 pu=1.00 ISC3=100000 ISC1=100000
+
+! Substation MEN bond: neutral solidly earthed at the transformer star point.
+! Near-zero impedance collapses to a `grounded` flag on terminal 4 in PMD
+! rather than materialising an extra earth node, so this form is safe.
+New Reactor.Grounding phases=1 bus1=sourcebus.4 bus2=sourcebus.0 R=0.0 X=1E-10
+
+! Linecode -- 185 mm^2 Al, 4x4, ohms per km at 50 Hz, 75 C
+! ---------------------------------------------------------------------------
+New Linecode.LV185 nphases=4 basefreq=50 units=km
+~ rmatrix = ( 0.2603 | 0.0493  0.2603 | 0.0493  0.0493  0.2603 | 0.0493  0.0493  0.0493  0.2603 )
+~ xmatrix = ( 0.3000 | 0.2200  0.3000 | 0.2200  0.2200  0.3000 | 0.2200  0.2200  0.2200  0.3000 )
+~ cmatrix = ( 0 | 0  0 | 0  0  0 | 0  0  0  0 )
+
+! Lines
+! ---------------------------------------------------------------------------
+! normamps/emergamps from 185 mm^2 Al in air. Not expected to bind, but
+! stated so that any current reported can be read against a real rating --
+! and so the NEUTRAL current can be, which is the one a phase overcurrent
+! relay never sees.
+New Line.LINE1 Bus1=sourcebus.1.2.3.4 Bus2=mid1.1.2.3.4   phases=4 Linecode=LV185 Length=0.150 Units=km normamps=300 emergamps=360
+New Line.LINE2 Bus1=mid1.1.2.3.4      Bus2=mid2.1.2.3.4   phases=4 Linecode=LV185 Length=0.150 Units=km normamps=300 emergamps=360
+New Line.LINE3 Bus1=mid2.1.2.3.4      Bus2=endbus.1.2.3.4 phases=4 Linecode=LV185 Length=0.250 Units=km normamps=300 emergamps=360
+
+! Loads -- single-phase, phase-to-neutral, aggregated per bus per phase
+! ---------------------------------------------------------------------------
+! One Load object per (bus, phase). Its kW is (lots on that phase) x 4.275.
+!
+! Vminpu/Vmaxpu are widened so OpenDSS holds constant power across the whole
+! range of interest. Without this OpenDSS silently reverts to constant
+! impedance outside 0.95-1.05 while PMD does not, and an OpenDSS cross-check
+! then diverges for reasons that have nothing to do with the formulation.
+!
+! BACKGROUND (fixed): mid1 and mid2, 2 lots per phase = 8.55 kW per phase.
+New Load.L_MID1_A Phases=1 Bus1=mid1.1.4 kV=0.2309 kW=8.55 PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+New Load.L_MID1_B Phases=1 Bus1=mid1.2.4 kV=0.2309 kW=8.55 PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+New Load.L_MID1_C Phases=1 Bus1=mid1.3.4 kV=0.2309 kW=8.55 PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+
+New Load.L_MID2_A Phases=1 Bus1=mid2.1.4 kV=0.2309 kW=8.55 PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+New Load.L_MID2_B Phases=1 Bus1=mid2.2.4 kV=0.2309 kW=8.55 PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+New Load.L_MID2_C Phases=1 Bus1=mid2.3.4 kV=0.2309 kW=8.55 PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+
+! SWEPT: endbus, 9 lots. Declared here at 3/3/3 (12.825 kW per phase).
+! set_phase_allocation! in the Julia script overwrites these three.
+New Load.L_END_A Phases=1 Bus1=endbus.1.4 kV=0.2309 kW=12.825 PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+New Load.L_END_B Phases=1 Bus1=endbus.2.4 kV=0.2309 kW=12.825 PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+New Load.L_END_C Phases=1 Bus1=endbus.3.4 kV=0.2309 kW=12.825 PF=0.95 model=1 Vminpu=0.7 Vmaxpu=1.3
+
+! Customer MEN bonds -- DELIBERATELY NOT DECLARED HERE
+! ---------------------------------------------------------------------------
+! Under AS/NZS 3000 the neutral is bonded to earth again at every customer's
+! main switchboard, not only at the substation. Those bonds are added in the
+! ENGINEERING model by add_men! in the Julia script, NOT as DSS reactors,
+! for two reasons:
+!
+!   - the single-terminal form (bus1=X.4) is parsed by PMD through a path
+!     that ignores R and X and falls back to kvar/kv defaults, silently
+!     producing a capacitive susceptance instead of a conductance;
+!   - the two-terminal form (bus1=X.4 bus2=X.0) parses R correctly but
+!     materialises an explicit earth node, widening conductor_ids to
+!     [1,2,3,4,5] and breaking every downstream 4-conductor assumption.
+!
+! add_men! builds them directly as ENG shunts on connections [4], which
+! sidesteps both. Pass men_ohm to load_base_network.
+!
+! NOTE: add_men! bonds EVERY bus carrying load, so mid1, mid2 and endbus all
+! receive one. The neutral-to-earth profile therefore kinks at each bonded
+! bus rather than rising as a single straight line.
+
+! ===========================================================================
+! Everything below is OpenDSS runtime only. It is ignored by PMD's parser,
+! and is here so this file can also be solved directly in OpenDSS as an
+! independent cross-check of the Julia results.
+! ===========================================================================
+
+Set voltagebases=[0.4]
+Calcvoltagebases
+
+Set tolerance=0.000001
+Set mode=Snap
+Solve
+
+Show Voltages LN Nodes
+Show Powers kVA Elements
+Show Losses
+Closedi
