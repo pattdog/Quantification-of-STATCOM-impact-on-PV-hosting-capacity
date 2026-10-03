@@ -20,9 +20,14 @@ WHAT IT RUNS (methodology doc, sections 3 and 5)
   Block 2  E4/E5          HC2 = HC1 + STATCOM, one row per converter mode, and
                           the fraction of attainable (HC2-HC1)/(HC_bal-HC1).
                           Bc vs B under export is E5.
+  Block 2b                The same, with the device on plain minimum-grid-
+                          import control (no knowledge of the limits).
   Block 3  E7             Substitution: PV fleet reactive output with and
                           without the STATCOM at the same operating point
                           (x = HC1 of that allocation).
+  Block 4                 Uniform size sweep with endbus per-phase phasors,
+                          and an R/X test: why volt-var lowers voltage but
+                          raises unbalance.
 
 DESIGN DECISIONS, AND WHY
 ---------------------------------------------------------------------------
@@ -139,6 +144,10 @@ CHANGES 2026-10-01
   three include()s; Ipopt itself takes 0.06-0.08 s. Validated against
   include() automatically before each run (VALIDATE_CORE).
 
+- Block 4 added: uniform size sweep with endbus per-phase phasors, and an
+  R/X test (line reactance scaled). Writes pv_sweep.csv.
+- Substitution ratio suppressed when the device supplies < 0.1 kvar.
+
 KNOWN LIMITS OF THIS SCRIPT
 ---------------------------------------------------------------------------
 - Not executed by its author: written against Sweep2 and
@@ -153,6 +162,10 @@ Run with:
     julia --project=<thesis root> Small_Network_PV.jl
 ==============================================================================
 =#
+
+# Wall clock for the whole run, package loading included (Base only, no extra packages).
+RUN_T0 = time()      # not const: the value changes on every include() in one REPL session
+println("Run started:  ", Libc.strftime("%Y-%m-%d %H:%M:%S", RUN_T0))
 
 using Logging
 Logging.disable_logging(Logging.Warn)
@@ -282,6 +295,17 @@ const RUN_BLOCK1 = true
 const RUN_BLOCK2 = true
 const RUN_BLOCK2_COST = true # 2b: HC2 when the STATCOM just minimises grid import
 const RUN_BLOCK3 = true
+
+# Block 4: uniform size sweep + R/X test (the mechanism behind "volt-var
+# lowers voltage but raises unbalance"). No bisection: every size is solved
+# and the endbus per-phase phasors are recorded.
+const RUN_BLOCK4     = true
+const SWEEP_ALLOCS   = [(3,3,3), (5,3,1), (7,1,1)]
+const SWEEP_MODES    = [:unity, :vvw]
+const SWEEP_SIZES    = collect(0.5:0.5:12.0)     # kVA per customer
+const SWEEP_X_SCALES = [1.0, 3.0]                # line reactance multiplier (1.0 = as built)
+const SWEEP_BUS      = "endbus"
+const SWEEP_PRINT_X  = 5.0                       # size at which the summary line is printed
 
 # Compile-once loading of the core files (see the COMPILE-ONCE section). The
 # global is deliberately non-const so validate_compiled_core() can toggle it.
@@ -577,6 +601,16 @@ function scale_loads!(dm, frac)
     end
 end
 
+# R/X test (block 4): multiply every real line's reactance matrix by k, self
+# and mutual alike, so the phase-plus-neutral loop reactance scales by k and
+# its resistance is untouched. The virtual source branch is left alone.
+function scale_line_reactance!(dm, k)
+    for (_, br) in dm["branch"]
+        startswith(get(br, "name", ""), "_virtual") && continue
+        br["br_x"] = br["br_x"] .* k
+    end
+end
+
 function set_source_voltage!(dm, vm_pu)
     isnothing(vm_pu) && return
     for (_, bus) in dm["bus"]
@@ -847,6 +881,48 @@ function violations(m)
     return v
 end
 
+# -----------------------------------------------------------------------
+# Per-phase phasors at one bus, for block 4.
+#
+# Angles are reported as the SHIFT from each phase's nominal position
+# (0, -120, +120 degrees), so a perfectly balanced bus reads 0/0/0 whatever
+# its magnitude. Two references, because the two limits see different things:
+#   vpn : phase-to-NEUTRAL -- what the 253 V limit and the inverter measure
+#   vpg : phase-to-GROUND  -- what VUF is computed from (a neutral shift is
+#         zero-sequence and cannot appear in |V2|/|V1|)
+# v1/v2 are the positive- and negative-sequence magnitudes in volts.
+# -----------------------------------------------------------------------
+function bus_id_by_name(name)
+    for (i, bus) in ref[:bus]
+        get(bus, "name", "") == name && return i
+    end
+    error("bus '$name' not found in the solved model")
+end
+
+_wrap180(a) = mod(a + 180.0, 360.0) - 180.0
+const NOMINAL_ANGLE_DEG = (0.0, -120.0, 120.0)
+
+function bus_phasors(name, sbase_kva)
+    i   = bus_id_by_name(name)
+    bus = ref[:bus][i]
+    vb  = get(bus, "vbase", 0.4 / sqrt(3)) * 1000
+    vg  = [(JuMP.value(vr[p, i]) + im * JuMP.value(vi[p, i])) * vb for p in 1:3]
+    vn  = 4 in bus["terminals"] ? (JuMP.value(vr[4, i]) + im * JuMP.value(vi[4, i])) * vb : 0.0im
+    vpn = vg .- vn
+    shift(v, p) = _wrap180(rad2deg(angle(v)) - NOMINAL_ANGLE_DEG[p])
+    v012 = TSEQ * vg
+    pv_p, pv_q = zeros(3), zeros(3)
+    for (id, g) in ref[:gen]
+        (get(g, "type", "") == "PV_VVW" && g["gen_bus"] == i) || continue
+        ph = g["pv_phase"]
+        pv_p[ph] += pu_to_kw(JuMP.value(pg[ph, id]), sbase_kva)
+        pv_q[ph] += pu_to_kvar(JuMP.value(qg[ph, id]), sbase_kva)
+    end
+    return (vpn_mag = abs.(vpn), vpn_ang = [shift(vpn[p], p) for p in 1:3],
+            vpg_mag = abs.(vg),  vpg_ang = [shift(vg[p], p)  for p in 1:3],
+            nev = abs(vn), v1 = abs(v012[2]), v2 = abs(v012[3]), pv_p = pv_p, pv_q = pv_q)
+end
+
 # =======================================================================
 # BUILD + SOLVE -- Sweep2's pipeline plus add_pv_control!
 # =======================================================================
@@ -916,8 +992,10 @@ function base_network(bounds_active::Bool)
 end
 
 function run_pv_case(; alloc, s_lot_kva, pv_mode::Symbol, statcom_mode::Symbol=:none,
-                     statcom_kva=STATCOM_KVA, objective="cost", bounds_active=false)
+                     statcom_kva=STATCOM_KVA, objective="cost", bounds_active=false,
+                     x_scale=1.0)
     dm = base_network(bounds_active)
+    x_scale == 1.0 || scale_line_reactance!(dm, x_scale)
     set_source_voltage!(dm, SOURCE_VM_PU)
     record_and_maybe_relax_thermal!(dm; relax = !bounds_active)
     set_phase_allocation!(dm, SBASE_KVA; bus_name=LOAD_BUS_NAME, lots_per_phase=alloc)
@@ -1266,7 +1344,7 @@ end
 # -----------------------------------------------------------------------
 if RUN_BLOCK1
     println("\n" * "=" ^ 92)
-    println(" BLOCK 1 -- HC ladder, no device   [kVA/lot; binding criterion at the first failing point]")
+    println(" BLOCK 1 -- HC ladder, no device   [kVA/customer; 'active' = limits at the HC point]")
     println("=" ^ 92)
     for alloc in ALLOCATIONS
         for mode in PV_MODES
@@ -1388,13 +1466,72 @@ if RUN_BLOCK3
             push!(point_rows, point_row("3", alloc, HC1_MODE, String(smode), x, "relaxed-$obj", st, true, "", m))
             sq  = sum(abs, m.statcom.net_q)
             dis = abs(m0.pv.q_kvar) - abs(m.pv.q_kvar)
-            rat = (smode in (:qonly, :qcap) && sq > 1e-3) ? dis / sq : NaN
+            rat = (smode in (:qonly, :qcap) && sq > 0.1) ? dis / sq : NaN   # < 0.1 kvar: device idle, ratio is noise
             push!(e7_rows, Any[alloc_label(alloc), x, code, obj, "SOLVED",
                                m0.pv.q_kvar, m.pv.q_kvar, dis, sq, rat,
                                m.pv.p_kw - m0.pv.p_kw, m0.vmax_V, m.vmax_V, 100 * m.vuf])
             @printf("    %-2s [%-4s] Q_pv = %+7.2f  displaced = %+6.2f kvar  sum|Q_sc| = %6.2f  ratio = %s  dP_pv = %+5.2f kW  Vmax = %6.1f V\n",
                     code, obj, m.pv.q_kvar, dis, sq, isnan(rat) ? " -- " : @sprintf("%4.2f", rat),
                     m.pv.p_kw - m0.pv.p_kw, m.vmax_V)
+        end
+    end
+end
+
+# -----------------------------------------------------------------------
+# BLOCK 4 -- uniform size sweep and R/X test. No device.
+#
+# Question: WHY does volt-var lower the worst voltage but raise VUF at the
+# same PV size? Proposed answer: on a resistive loop (R/X ~ 2.6 here),
+# absorbing Q on the heavy phase reduces that phase's voltage MAGNITUDE only
+# by ~X|Q| but shifts its ANGLE by ~R|Q|, and the absorption is single-phase.
+# The 253 V limit sees magnitude; VUF sees the whole phasor.
+#
+# Two tests of that answer, both read off pv_sweep.csv:
+#   (a) Phasors. Under volt-var, the heavy phase should show LOWER magnitude
+#       but a LARGER angle shift than at unity PF, at the same size.
+#   (b) R/X. With the line reactance scaled up (SWEEP_X_SCALES), Q becomes a
+#       better magnitude lever and a weaker angle lever, so the VUF penalty
+#       of volt-var (dVUF = VUF_vvw - VUF_unity) should shrink or change sign.
+# If (b) does not happen, the R/X explanation is wrong and needs replacing.
+# -----------------------------------------------------------------------
+const SWEEP_HEADER = [
+    "allocation", "pv_mode", "x_scale", "x_kva_per_lot", "status",
+    "vmax_v", "vmin_v", "vuf_pct", "v1_v", "v2_v", "pv_p_kw", "pv_q_kvar", "pv_curt_kw",
+    "vpn_mag_a", "vpn_mag_b", "vpn_mag_c", "vpn_ang_a", "vpn_ang_b", "vpn_ang_c",
+    "vpg_mag_a", "vpg_mag_b", "vpg_mag_c", "vpg_ang_a", "vpg_ang_b", "vpg_ang_c",
+    "nev_v", "bus_pv_p_a", "bus_pv_p_b", "bus_pv_p_c", "bus_pv_q_a", "bus_pv_q_b", "bus_pv_q_c"]
+
+sweep_rows = Vector{Any}[]
+
+if RUN_BLOCK4
+    println("\n" * "=" ^ 92)
+    println(" BLOCK 4 -- uniform size sweep + R/X test at $SWEEP_BUS   [no device, limits relaxed]")
+    println(" summary line at x = $(SWEEP_PRINT_X) kVA/customer; phase a = the heavy phase; angles are shifts from nominal")
+    println("=" ^ 92)
+    for xs in SWEEP_X_SCALES, alloc in SWEEP_ALLOCS
+        probe = Dict{Symbol,Any}()
+        for mode in SWEEP_MODES, x in SWEEP_SIZES
+            st, gids = run_pv_case(alloc=alloc, s_lot_kva=x, pv_mode=mode, x_scale=xs)
+            if !solved(st)
+                push!(sweep_rows, Any[alloc_label(alloc), String(mode), xs, x, string(st),
+                                      fill(nothing, length(SWEEP_HEADER) - 5)...])
+                continue
+            end
+            m  = evaluate_point(gids, SBASE_KVA, STATCOM_KVA)
+            ph = bus_phasors(SWEEP_BUS, SBASE_KVA)
+            push!(sweep_rows, Any[alloc_label(alloc), String(mode), xs, x, "SOLVED",
+                m.vmax_V, m.vmin_V, 100 * m.vuf, ph.v1, ph.v2, m.pv.p_kw, m.pv.q_kvar, m.pv.curt_kw,
+                ph.vpn_mag..., ph.vpn_ang..., ph.vpg_mag..., ph.vpg_ang...,
+                ph.nev, ph.pv_p..., ph.pv_q...])
+            x == SWEEP_PRINT_X && (probe[mode] = (m, ph))
+        end
+        if haskey(probe, :unity) && haskey(probe, :vvw)
+            (mu, pu_), (mv, pv_) = probe[:unity], probe[:vvw]
+            @printf("  X x%.0f  %-6s unity: Vmax %6.1f V  VUF %5.2f%%  |Va| %6.1f V  ang_a %+5.2f deg | vvw: Vmax %6.1f V  VUF %5.2f%%  |Va| %6.1f V  ang_a %+5.2f deg | dVUF %+5.2f pp\n",
+                    xs, alloc_label(alloc),
+                    mu.vmax_V, 100 * mu.vuf, pu_.vpn_mag[1], pu_.vpg_ang[1],
+                    mv.vmax_V, 100 * mv.vuf, pv_.vpn_mag[1], pv_.vpg_ang[1],
+                    100 * (mv.vuf - mu.vuf))
         end
     end
 end
@@ -1413,6 +1550,7 @@ write_csv(joinpath(outdir, "pv_substitution.csv"),
      "q_pv_none_kvar", "q_pv_with_kvar", "displaced_kvar", "statcom_abs_q_kvar", "subst_ratio",
      "dp_pv_kw", "vmax_none_v", "vmax_with_v", "vuf_with_pct"],
     e7_rows)
+RUN_BLOCK4 && write_csv(joinpath(outdir, "pv_sweep.csv"), SWEEP_HEADER, sweep_rows)
 
 println("""
 
@@ -1437,8 +1575,17 @@ Checks before believing any number above:
   8. Block 3: per-phase sc_p of C/D sum to ~0. Ratio column is for B/Bc only.
   9. pv_curt_kw in pv_points.csv below 253 V is capability-circle curtailment (reactive
      priority, AS/NZS 4777.2) -- real, mandated, and invisible to a volt-watt-only count.
+  10. Block 4: at 3/3/3 every angle shift should be equal across phases and dVUF ~ 0. At
+     7/1/1, X x1: volt-var should show LOWER |Va| but a LARGER ang_a than unity. At X x3 the
+     dVUF column should shrink or change sign; if it does not, the R/X explanation is wrong.
 """)
 
 n = max(TIMING[:n], 1)
 @printf("Timing over %d solves (s/solve):  parse+copy %.2f   build %.2f   optimize %.2f (Ipopt %.2f)\n",
         Int(TIMING[:n]), TIMING[:parse]/n, TIMING[:build]/n, TIMING[:optimize]/n, TIMING[:ipopt]/n)
+
+let dt = time() - RUN_T0
+    println("Run finished: ", Libc.strftime("%Y-%m-%d %H:%M:%S", time()))
+    @printf("Total wall time: %.1f s  (%d min %04.1f s), package loading and compilation included\n",
+            dt, floor(Int, dt / 60), dt % 60)
+end
