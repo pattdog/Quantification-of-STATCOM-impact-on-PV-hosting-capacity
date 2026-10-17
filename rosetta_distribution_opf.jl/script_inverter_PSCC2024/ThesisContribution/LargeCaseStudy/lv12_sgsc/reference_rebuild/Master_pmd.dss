@@ -1,0 +1,18 @@
+! PMD-ready master for LV12_248 (draw 45, 13:00 loads).
+! - Customer MEN bonds are NOT here: add_men! adds them in Julia (two-terminal reactors
+!   would widen PMD to 5 conductors).
+! - Source neutral earthed with the same near-zero reactor as 4_Bus_Small.dss, which PMD
+!   collapses to a grounded flag on terminal 4 instead of adding an earth node.
+! - Source impedance: stiff (OpenDSS default at 0.4 kV, 0.08 mOhm), written on the circuit line.
+clear
+set defaultbasefrequency=50
+! Source impedance stated explicitly (ohm): OpenDSS's default fault level at 0.4 kV (MVAsc3 2000,
+! MVAsc1 2100). Without it PMD computes that default at 115 kV (1.60 + j6.42 ohm).
+new circuit.lv12_248 basekv=0.4 pu=1.05610 phases=3 bus1=B908 R1=1.94028500029066e-05 X1=7.76114000116266e-05 R0=2.17289779069744e-05 X0=6.51869337209233e-05
+new reactor.grounding phases=1 bus1=B908.4 bus2=B908.0 R=0.0 X=1E-10
+redirect Linecodes.dss
+redirect Lines.dss
+redirect Switches.dss
+redirect Loads_h13_draw045.dss
+set voltagebases=[0.4]
+calcvoltagebases

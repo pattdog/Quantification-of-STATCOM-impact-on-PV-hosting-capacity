@@ -1,0 +1,4 @@
+config,init,order,k0,crossings,k_scan
+HC0,1,1,67,0,66
+HC1,1,1,67,7,67
+HC2_D_pair,1,1,67,0,121

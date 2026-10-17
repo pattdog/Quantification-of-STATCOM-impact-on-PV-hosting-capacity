@@ -1,0 +1,12 @@
+clear
+set defaultbasefrequency=50
+new circuit.lv12_248 basekv=0.4 pu=1.05610 phases=3 bus1=B908 model=ideal
+redirect Linecodes.dss
+redirect Lines.dss
+redirect Switches.dss
+redirect Loads.dss
+redirect Groundings.dss
+! solid neutral-earth at the source (cleaning log: replaces the 0.3 ohm reactor)
+new reactor.source_earth phases=1 bus1=B908.4 bus2=B908.0 r=0.000001 x=0
+set voltagebases=[0.4]
+calcvoltagebases

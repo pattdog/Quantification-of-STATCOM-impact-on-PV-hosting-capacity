@@ -28,6 +28,11 @@ WHAT IT RUNS (methodology doc, sections 3 and 5)
   Block 4                 Uniform size sweep with endbus per-phase phasors,
                           and an R/X test: why volt-var lowers voltage but
                           raises unbalance.
+  Block 5                 STATCOM siting and sizing: Block 2's HC2 for every
+                          bus (mid1, mid2, endbus) and rating (15-90 kVA).
+  Block 6                 Source-voltage sensitivity: Blocks 1 and 2 again at
+                          1.00 / 1.03 / 1.05 pu. Does "unbalance binds under
+                          volt-var" survive a realistic supply voltage?
 
 DESIGN DECISIONS, AND WHY
 ---------------------------------------------------------------------------
@@ -147,6 +152,13 @@ CHANGES 2026-10-01
 - Block 4 added: uniform size sweep with endbus per-phase phasors, and an
   R/X test (line reactance scaled). Writes pv_sweep.csv.
 - Substitution ratio suppressed when the device supplies < 0.1 kvar.
+- Block 5 added: STATCOM siting and sizing (HC2 by bus and rating). Writes
+  pv_siting_sizing.csv. hc_point / hc_bisect / run_pv_case take statcom_kva
+  and statcom_bus; the defaults reproduce every earlier block unchanged.
+- Start/finish timestamps and total wall time printed.
+- Block 6 added: source-voltage sensitivity. Writes pv_source.csv. The search
+  functions take source_vm; the default (SOURCE_VM_PU) leaves every earlier
+  block unchanged.
 
 KNOWN LIMITS OF THIS SCRIPT
 ---------------------------------------------------------------------------
@@ -306,6 +318,27 @@ const SWEEP_SIZES    = collect(0.5:0.5:12.0)     # kVA per customer
 const SWEEP_X_SCALES = [1.0, 3.0]                # line reactance multiplier (1.0 = as built)
 const SWEEP_BUS      = "endbus"
 const SWEEP_PRINT_X  = 5.0                       # size at which the summary line is printed
+
+# Block 5: STATCOM siting and sizing. HC2 with limit-aware control (as Block 2)
+# for every combination of bus and rating. 30 kVA is a commercially available
+# LV unit; the other ratings are hypothetical. 60 and 90 kVA can also be read
+# as two or three 30 kVA units on one bus under one controller: with equal
+# per-leg limits and sum(P) = 0 on each, this model cannot tell them apart
+# from a single larger unit.
+const RUN_BLOCK5  = true
+const SITE_BUSES  = ["mid1", "mid2", "endbus"]              # in order of distance from the source
+const SITE_DIST_M = Dict("mid1" => 150.0, "mid2" => 300.0, "endbus" => 550.0)
+const SIZE_KVA    = [15.0, 30.0, 45.0, 60.0, 90.0]          # total rating, three equal legs
+const SS_ALLOCS   = [(4,3,2), (5,3,1), (7,1,1)]             # 3/3/3 has nothing to balance
+
+# Block 6: source-voltage sensitivity. Blocks 1 and 2 (HC0, HC1, HC2 per
+# mode, limit-aware) repeated at each source voltage. The .dss source is
+# 1.00 pu = 230.9 V, the nominal; real transformer LV terminals mostly sit
+# above it (Energy Queensland, Jan 2021: 82% of 23,750 monitored transformers
+# have a median at or below 244 V). 1.03 pu = 237.9 V, 1.05 pu = 242.5 V.
+const RUN_BLOCK6   = true
+const SRC_VM_SWEEP = [1.00, 1.03, 1.05]
+const SRC_VNOM_V   = 400.0 / sqrt(3)
 
 # Compile-once loading of the core files (see the COMPILE-ONCE section). The
 # global is deliberately non-const so validate_compiled_core() can toggle it.
@@ -992,11 +1025,11 @@ function base_network(bounds_active::Bool)
 end
 
 function run_pv_case(; alloc, s_lot_kva, pv_mode::Symbol, statcom_mode::Symbol=:none,
-                     statcom_kva=STATCOM_KVA, objective="cost", bounds_active=false,
-                     x_scale=1.0)
+                     statcom_kva=STATCOM_KVA, statcom_bus=STATCOM_BUS, objective="cost",
+                     bounds_active=false, x_scale=1.0, source_vm=SOURCE_VM_PU)
     dm = base_network(bounds_active)
     x_scale == 1.0 || scale_line_reactance!(dm, x_scale)
-    set_source_voltage!(dm, SOURCE_VM_PU)
+    set_source_voltage!(dm, source_vm)
     record_and_maybe_relax_thermal!(dm; relax = !bounds_active)
     set_phase_allocation!(dm, SBASE_KVA; bus_name=LOAD_BUS_NAME, lots_per_phase=alloc)
     lots = lots_by_bus_phase(dm, SBASE_KVA)
@@ -1004,7 +1037,7 @@ function run_pv_case(; alloc, s_lot_kva, pv_mode::Symbol, statcom_mode::Symbol=:
     s_lot_kva > 0 && add_pv_fleet!(dm, SBASE_KVA; s_lot_kva=s_lot_kva, lots=lots, mode=pv_mode)
 
     gids = statcom_mode == :none ? Int[] :
-        add_statcom!(dm, SBASE_KVA; bus_name=STATCOM_BUS,
+        add_statcom!(dm, SBASE_KVA; bus_name=statcom_bus,
                      rating_kva_total=statcom_kva, mode=statcom_mode)
 
     st = try
@@ -1047,41 +1080,49 @@ end
 # enforce_fallback=false skips route 2: the answer is then "does the STATCOM,
 # running STATCOM_HC_OBJECTIVE with no knowledge of the limits, keep the
 # network compliant?" -- the cost-dispatch HC of block 2b.
-function hc_point(alloc, x; pv_mode, statcom_mode=:none, block="", enforce_fallback=true)
+#
+# statcom_kva / statcom_bus default to the study's device (30 kVA at endbus).
+# record=false keeps the point out of pv_points.csv: block 5 varies bus and
+# rating, which that file has no columns for.
+function hc_point(alloc, x; pv_mode, statcom_mode=:none, block="", enforce_fallback=true,
+                  statcom_kva=STATCOM_KVA, statcom_bus=STATCOM_BUS, record=true,
+                  source_vm=SOURCE_VM_PU)
     sc = statcom_mode == :none ? "none" : String(statcom_mode)
     relaxed_only = statcom_mode == :none || !enforce_fallback
 
     st, gids = run_pv_case(alloc=alloc, s_lot_kva=x, pv_mode=pv_mode, statcom_mode=statcom_mode,
+                           statcom_kva=statcom_kva, statcom_bus=statcom_bus, source_vm=source_vm,
                            objective=STATCOM_HC_OBJECTIVE, bounds_active=false)
     if solved(st)
-        m = evaluate_point(gids, SBASE_KVA, STATCOM_KVA)
+        m = evaluate_point(gids, SBASE_KVA, statcom_kva)
         v = violations(m)
         pass = isempty(v)
-        push!(point_rows, point_row(block, alloc, pv_mode, sc, x, "relaxed", st, pass,
-                                    pass ? "" : v[1][1], m))
+        record && push!(point_rows, point_row(block, alloc, pv_mode, sc, x, "relaxed", st, pass,
+                                              pass ? "" : v[1][1], m))
         (pass || relaxed_only) && return (pass=pass, binding=pass ? "" : v[1][1],
                                           status=string(st), m=m)
         binding = v[1][1]
     else
-        push!(point_rows, point_row(block, alloc, pv_mode, sc, x, "relaxed", st, false,
-                                    "not solved", nothing))
+        record && push!(point_rows, point_row(block, alloc, pv_mode, sc, x, "relaxed", st, false,
+                                              "not solved", nothing))
         binding = "relaxed solve: $st"
         relaxed_only && return (pass=false, binding=binding, status=string(st), m=nothing)
     end
 
     # Route 2: a compliant STATCOM dispatch exists iff this solves.
     st2, gids2 = run_pv_case(alloc=alloc, s_lot_kva=x, pv_mode=pv_mode, statcom_mode=statcom_mode,
+                             statcom_kva=statcom_kva, statcom_bus=statcom_bus, source_vm=source_vm,
                              objective=STATCOM_HC_OBJECTIVE, bounds_active=true)
     if solved(st2)
-        m2 = evaluate_point(gids2, SBASE_KVA, STATCOM_KVA)
+        m2 = evaluate_point(gids2, SBASE_KVA, statcom_kva)
         v2 = violations(m2)
         pass2 = isempty(v2)
-        push!(point_rows, point_row(block, alloc, pv_mode, sc, x, "enforced", st2, pass2,
-                                    pass2 ? "" : v2[1][1], m2))
+        record && push!(point_rows, point_row(block, alloc, pv_mode, sc, x, "enforced", st2, pass2,
+                                              pass2 ? "" : v2[1][1], m2))
         return (pass=pass2, binding=pass2 ? "" : v2[1][1], status=string(st2), m=m2)
     end
-    push!(point_rows, point_row(block, alloc, pv_mode, sc, x, "enforced", st2, false,
-                                "infeasible: $binding", nothing))
+    record && push!(point_rows, point_row(block, alloc, pv_mode, sc, x, "enforced", st2, false,
+                                          "infeasible: $binding", nothing))
     return (pass=false, binding=binding, status=string(st2), m=nothing)
 end
 
@@ -1110,9 +1151,11 @@ end
 # confirmed it (no HC2 below HC1; C at 3/3/3 equal to it). If lo_start
 # unexpectedly fails, the search falls back to HC_LO rather than trusting it.
 function hc_bisect(alloc; pv_mode, statcom_mode=:none, block="", lo_start=HC_LO,
-                   enforce_fallback=true)
+                   enforce_fallback=true, statcom_kva=STATCOM_KVA, statcom_bus=STATCOM_BUS,
+                   record=true, source_vm=SOURCE_VM_PU)
     n = 0
-    pt(x) = (n += 1; hc_point(alloc, x; pv_mode, statcom_mode, block, enforce_fallback))
+    pt(x) = (n += 1; hc_point(alloc, x; pv_mode, statcom_mode, block, enforce_fallback,
+                              statcom_kva, statcom_bus, record, source_vm))
 
     r_lo = pt(lo_start)
     if !r_lo.pass && lo_start > HC_LO
@@ -1536,6 +1579,199 @@ if RUN_BLOCK4
     end
 end
 
+# -----------------------------------------------------------------------
+# BLOCK 5 -- STATCOM siting and sizing.
+#
+# Block 2 is one device: 30 kVA at endbus, the bus that carries all of the
+# allocation imbalance. This block repeats Block 2's search (limit-aware
+# control: HC2 is the largest size for which SOME compliant dispatch exists)
+# for every bus in SITE_BUSES and every rating in SIZE_KVA.
+#
+# Two questions:
+#   sizing : how much hosting capacity does each extra kVA of device buy, and
+#            where does each mode stop improving?  '*' in the table marks an
+#            HC2 at which the device is saturated, i.e. still rating-limited.
+#   siting : what is lost by not being at the unbalance?  On this network the
+#            answer to "where" is known in advance (endbus); the block measures
+#            the penalty. A real siting study needs a real feeder (LV12_248).
+#
+# Two built-in checks, printed at the end of the block:
+#   - the (STATCOM_BUS, STATCOM_KVA) cell must reproduce Block 2 exactly: it
+#     is the same search from the same starting point;
+#   - HC2 cannot fall as the rating rises (a larger device can always copy a
+#     smaller one's dispatch), so any drop beyond HC_TOL is a solver problem.
+#
+# Points are not written to pv_points.csv (record=false): one row per search
+# goes to pv_siting_sizing.csv with the metrics AT the HC2 point.
+# -----------------------------------------------------------------------
+const SS_HEADER = [
+    "bus", "distance_m", "rating_kva", "allocation", "statcom", "scenario",
+    "hc1_kva_per_lot", "hc2_kva_per_lot", "delta_hc", "frac_attainable", "pv_kva_per_device_kva",
+    "capped", "active_at_hc", "first_fail", "n_solves",
+    "vmax_v", "vmin_v", "vuf_pct", "therm_util", "i_neutral_max_a", "loss_kw",
+    "pv_p_kw", "pv_curt_kw", "pv_q_kvar",
+    "sc_p1_kw", "sc_p2_kw", "sc_p3_kw", "sc_q1_kvar", "sc_q2_kvar", "sc_q3_kvar", "sc_util"]
+
+ss_rows = Vector{Any}[]
+
+function run_block5!(rows)
+    println("\n" * "=" ^ 92)
+    println(" BLOCK 5 -- STATCOM siting and sizing: HC2 (kVA/customer) by bus and rating, limit-aware control")
+    println(" '*' = device saturated at the HC2 point (still rating-limited)")
+    println("=" ^ 92)
+    n_cust = PENETRATION * sum(values(LOTS_AT_BUS))
+    hc1_of(alloc) = haskey(HC, (alloc, HC1_MODE, :none)) ? HC[(alloc, HC1_MODE, :none)].hc :
+                    (HC[(alloc, HC1_MODE, :none)] = hc_bisect(alloc; pv_mode=HC1_MODE, block="5", record=false)).hc
+    hc_bal = hc1_of(BALANCED)
+    gap_b2, n_b2, n_drop = 0.0, 0, 0
+
+    for alloc in SS_ALLOCS
+        hc1 = hc1_of(alloc)
+        @printf("\n  %-6s HC1 = %6.2f   ceiling HC_bal = %6.2f\n", alloc_label(alloc), hc1, hc_bal)
+        for (smode, code, label) in STATCOM_MODES
+            @printf("    %-2s %-18s", code, label)
+            foreach(k -> @printf("%8.0f  ", k), SIZE_KVA)
+            println("kVA")
+            for bus in SITE_BUSES
+                cells, prev = String[], -Inf
+                for kva in SIZE_KVA
+                    r = hc_bisect(alloc; pv_mode=HC1_MODE, statcom_mode=smode, block="5", lo_start=hc1,
+                                  statcom_kva=kva, statcom_bus=bus, record=false)
+                    m = r.m
+                    sd = isnothing(m) ? nothing : m.statcom
+                    dhc = r.hc - hc1
+                    gap = hc_bal - hc1
+                    push!(rows, Any[bus, get(SITE_DIST_M, bus, NaN), kva, alloc_label(alloc), String(smode), code,
+                        hc1, r.hc, dhc, gap > HC_TOL ? dhc / gap : NaN, dhc * n_cust / kva,
+                        r.capped, r.active, r.binding, r.n,
+                        (isnothing(m) ? fill(nothing, 9) :
+                            Any[m.vmax_V, m.vmin_V, 100 * m.vuf, m.therm, m.in_max_a, m.loss_kw,
+                                m.pv.p_kw, m.pv.curt_kw, m.pv.q_kvar])...,
+                        (isnothing(sd) ? fill(nothing, 7) : Any[sd.net_p..., sd.net_q..., sd.worst_util])...])
+                    push!(cells, " " * fmt_hc(r) * (occursin("device", r.active) ? "* " : "  "))
+
+                    if !isnan(r.hc)
+                        r.hc < prev - HC_TOL && (n_drop += 1)
+                        prev = max(prev, r.hc)
+                        if bus == STATCOM_BUS && kva == STATCOM_KVA && haskey(HC, (alloc, HC1_MODE, smode))
+                            b2 = HC[(alloc, HC1_MODE, smode)].hc
+                            isnan(b2) || (gap_b2 = max(gap_b2, abs(r.hc - b2)); n_b2 += 1)
+                        end
+                    end
+                end
+                @printf("       %-18s%s\n", bus, join(cells))
+            end
+        end
+    end
+
+    println()
+    if n_b2 > 0
+        @printf("  check: %s at %.0f kVA reproduces Block 2 in %d cases, max |dHC2| = %.3f  %s\n",
+                STATCOM_BUS, STATCOM_KVA, n_b2, gap_b2, gap_b2 <= 1e-9 ? "OK" : "<-- should be 0")
+    else
+        println("  check: no Block 2 result to compare against (RUN_BLOCK2 off, or bus/rating not in the sweep)")
+    end
+    @printf("  check: HC2 falls with rising rating in %d cases  %s\n", n_drop,
+            n_drop == 0 ? "OK" : "<-- a larger device cannot do worse: look at those searches")
+    return nothing
+end
+
+RUN_BLOCK5 && run_block5!(ss_rows)
+
+# -----------------------------------------------------------------------
+# BLOCK 6 -- source-voltage sensitivity.
+#
+# Every result above has the source at SOURCE_VM_PU (1.00 pu = 230.9 V unless
+# overridden). That leaves 22 V below the 253 V limit and puts every inverter
+# in the middle of its volt-var deadband (220-240 V) before any PV is added.
+# A higher source removes voltage headroom and starts the fleet nearer, or
+# past, the 240 V edge -- but does not by itself add unbalance. So the
+# finding "under volt-var, VUF binds from 5/3/1" is the one most exposed to
+# this choice: read the HC1 'active' column at each voltage.
+#
+# Per source voltage and allocation: HC0 (unity), HC1 (HC1_MODE), then HC2 for
+# each STATCOM mode at STATCOM_KVA / STATCOM_BUS with limit-aware control.
+#
+# Built-in check: the row at the base source voltage is the same search as
+# Blocks 1 and 2 and must reproduce them exactly.
+#
+# Points are not written to pv_points.csv; one row per search goes to
+# pv_source.csv with the metrics at the HC point.
+# -----------------------------------------------------------------------
+const SRC_HEADER = [
+    "source_vm_pu", "source_v", "allocation", "pv_mode", "statcom", "scenario",
+    "hc_kva_per_lot", "capped", "active_at_hc", "first_fail", "n_solves", "hc1_kva_per_lot", "delta_hc",
+    "vmax_v", "vmin_v", "vuf_pct", "therm_util", "i_neutral_max_a", "loss_kw",
+    "pv_p_kw", "pv_curt_kw", "pv_q_kvar", "sc_util"]
+
+src_rows = Vector{Any}[]
+
+function run_block6!(rows)
+    println("\n" * "=" ^ 92)
+    println(" BLOCK 6 -- source-voltage sensitivity: HC (kVA/customer), $(STATCOM_KVA) kVA at $STATCOM_BUS, limit-aware control")
+    println(" 'active' = limits within margin at that HC point")
+    println("=" ^ 92)
+    base_vm = isnothing(SOURCE_VM_PU) ? first(first(_src_vm)) : SOURCE_VM_PU
+    gap, ncmp = 0.0, 0
+
+    function row(vm, alloc, mode, sc, code, r, hc1)
+        m = r.m
+        tail = isnothing(m) ? fill(nothing, 10) :
+               Any[m.vmax_V, m.vmin_V, 100 * m.vuf, m.therm, m.in_max_a, m.loss_kw,
+                   m.pv.p_kw, m.pv.curt_kw, m.pv.q_kvar,
+                   isnothing(m.statcom) ? nothing : m.statcom.worst_util]
+        return Any[vm, vm * SRC_VNOM_V, alloc_label(alloc), String(mode), sc, code,
+                   r.hc, r.capped, r.active, r.binding, r.n, hc1,
+                   isnothing(hc1) ? nothing : r.hc - hc1, tail...]
+    end
+    function compare(vm, key, r)
+        (isapprox(vm, base_vm) && haskey(HC, key)) || return
+        b = HC[key].hc
+        (isnan(b) || isnan(r.hc)) && return
+        gap = max(gap, abs(r.hc - b)); ncmp += 1
+        return
+    end
+
+    for vm in SRC_VM_SWEEP
+        @printf("\n  source %.2f pu (%.1f V)\n", vm, vm * SRC_VNOM_V)
+        @printf("    %-6s  %-22s  %-22s", "alloc", "HC0 unity   active", "HC1 $(HC1_MODE)     active")
+        foreach(sm -> @printf("%8s", sm[2]), STATCOM_MODES)
+        println()
+        for alloc in ALLOCATIONS
+            r0 = hc_bisect(alloc; pv_mode=:unity,   block="6", source_vm=vm, record=false)
+            r1 = hc_bisect(alloc; pv_mode=HC1_MODE, block="6", source_vm=vm, record=false)
+            push!(rows, row(vm, alloc, :unity,   "none", "A", r0, nothing))
+            push!(rows, row(vm, alloc, HC1_MODE, "none", "A", r1, nothing))
+            compare(vm, (alloc, :unity,   :none), r0)
+            compare(vm, (alloc, HC1_MODE, :none), r1)
+            cells = String[]
+            for (smode, code, label) in STATCOM_MODES
+                if isnan(r1.hc)
+                    push!(cells, "      --"); continue
+                end
+                r2 = hc_bisect(alloc; pv_mode=HC1_MODE, statcom_mode=smode, block="6", lo_start=r1.hc,
+                               source_vm=vm, record=false)
+                push!(rows, row(vm, alloc, HC1_MODE, String(smode), code, r2, r1.hc))
+                compare(vm, (alloc, HC1_MODE, smode), r2)
+                push!(cells, " " * fmt_hc(r2))
+            end
+            @printf("    %-6s  %s %-14s  %s %-14s%s\n", alloc_label(alloc),
+                    fmt_hc(r0), r0.active, fmt_hc(r1), r1.active, join(cells))
+        end
+    end
+
+    println()
+    if ncmp > 0
+        @printf("  check: the %.2f pu rows reproduce Blocks 1 and 2 in %d cases, max |dHC| = %.3f  %s\n",
+                base_vm, ncmp, gap, gap <= 1e-9 ? "OK" : "<-- should be 0")
+    else
+        println("  check: nothing to compare (base source voltage not in SRC_VM_SWEEP, or Blocks 1-2 off)")
+    end
+    return nothing
+end
+
+RUN_BLOCK6 && run_block6!(src_rows)
+
 # =======================================================================
 # OUTPUT
 # =======================================================================
@@ -1551,6 +1787,8 @@ write_csv(joinpath(outdir, "pv_substitution.csv"),
      "dp_pv_kw", "vmax_none_v", "vmax_with_v", "vuf_with_pct"],
     e7_rows)
 RUN_BLOCK4 && write_csv(joinpath(outdir, "pv_sweep.csv"), SWEEP_HEADER, sweep_rows)
+RUN_BLOCK5 && write_csv(joinpath(outdir, "pv_siting_sizing.csv"), SS_HEADER, ss_rows)
+RUN_BLOCK6 && write_csv(joinpath(outdir, "pv_source.csv"), SRC_HEADER, src_rows)
 
 println("""
 
@@ -1576,8 +1814,21 @@ Checks before believing any number above:
   9. pv_curt_kw in pv_points.csv below 253 V is capability-circle curtailment (reactive
      priority, AS/NZS 4777.2) -- real, mandated, and invisible to a volt-watt-only count.
   10. Block 4: at 3/3/3 every angle shift should be equal across phases and dVUF ~ 0. At
-     7/1/1, X x1: volt-var should show LOWER |Va| but a LARGER ang_a than unity. At X x3 the
-     dVUF column should shrink or change sign; if it does not, the R/X explanation is wrong.
+     7/1/1, X x1: volt-var should show LOWER |Va| but a LARGER ang_a than unity. dVUF at X x3
+     was expected to shrink; on 3 Oct 2026 it did not (+0.30/+0.26 -> +0.36/+0.31), so the R/X
+     explanation is rejected. VUF scales with |Z| (x1.46 for X x3) and the vvw/unity VUF ratio
+     is ~unchanged: the penalty is unbalanced reactive current, not impedance angle.
+  11. Block 5: both printed checks must read OK. Then read each row left to right: HC2 should
+     rise and flatten. Trust the slope, not the '*': where HC2 is flat in rating the 0.05
+     search gap hides a large change in device loading, so the '*' comes and goes. An upstream
+     bus beating endbus (first run: 15 cells) is a finding to explain, not an error. Only 30 kVA is a real product; 60/90 kVA also stand for 2 or 3 such units on
+     one bus under one controller. The siting result says how much is lost away from the
+     unbalance, not where to put a device on a real feeder.
+  12. Block 6: the check line must read OK. Then read the HC1 'active' column down each
+     source voltage. If 'vuf' gives way to 'vmax' as the source rises, "unbalance binds under
+     volt-var" holds only for a low supply voltage and must be stated that way. HC0 should
+     fall steeply with source voltage (pure headroom); the device gains (HC2 - HC1) say
+     whether a balancing device still has anything to act on.
 """)
 
 n = max(TIMING[:n], 1)

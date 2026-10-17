@@ -2,7 +2,7 @@
 ==============================================================================
 figures_pv.jl -- figures for the small-network PV hosting-capacity results
 ==============================================================================
-Reads the CSVs written by Small_Network_PV.jl and draws eight figures. It
+Reads the CSVs written by Small_Network_PV.jl and draws eleven figures. It
 never solves: a change to a figure never needs a re-run of the study.
 
     pv_hc.csv            Fig 1  HC ladder (HC0 vs HC1)
@@ -13,8 +13,12 @@ never solves: a change to a figure never needs a re-run of the study.
     pv_sweep.csv         Fig 6  worst voltage and VUF against PV size
                          Fig 7  heavy-phase magnitude, angle shift, |V2|
                          Fig 8  R/X test
-Figs 6-8 need Block 4 of Small_Network_PV.jl; they are skipped with a note if
-pv_sweep.csv is absent.
+    pv_siting_sizing.csv Fig 9  HC2 against STATCOM rating, at the best bus
+                         Fig 10 HC2 against STATCOM bus, at 30 kVA and at the
+                                largest rating
+    pv_source.csv        Fig 11 HC0, HC1 and HC2 at each source voltage
+Figs 6-8 need Block 4 of Small_Network_PV.jl, Figs 9-10 need Block 5 and
+Fig 11 needs Block 6; each group is skipped with a note if its CSV is absent.
 
 Each figure is saved as PDF (for the thesis) and PNG (for slides).
 
@@ -29,7 +33,9 @@ Dependencies: CairoMakie only. The CSVs are read by the small parser below,
 so CSV.jl / DataFrames.jl are not needed.
 
 Every figure describes ONE configuration: source 1.0 pu, load 25% of ADMD,
-MEN 10 ohm per customer, 30 kVA STATCOM at endbus. Say so in each caption.
+MEN 10 ohm per customer, 30 kVA STATCOM at endbus (Figs 9-10 vary the last
+two). Say so in each caption. Only 30 kVA is a commercially available unit;
+the other ratings in Figs 9-10 are hypothetical.
 
 Not executed by its author (no Julia available when it was written): it
 mirrors a Python preview that was run on the same CSVs. If a Makie call
@@ -183,6 +189,10 @@ pts = read_csv(joinpath(INDIR, "pv_points.csv"))
 sub = read_csv(joinpath(INDIR, "pv_substitution.csv"))
 const SWEEP_PATH = joinpath(INDIR, "pv_sweep.csv")
 sweep = isfile(SWEEP_PATH) ? read_csv(SWEEP_PATH) : nothing
+const SS_PATH = joinpath(INDIR, "pv_siting_sizing.csv")
+ss = isfile(SS_PATH) ? read_csv(SS_PATH) : nothing
+const SRC_PATH = joinpath(INDIR, "pv_source.csv")
+src = isfile(SRC_PATH) ? read_csv(SRC_PATH) : nothing
 
 hcval(block, alloc; kw...) = num(only_row(hc; block = block, allocation = alloc, kw...), "hc_kva_per_lot")
 
@@ -448,9 +458,159 @@ else
         bottom_legend(fig[2, 1:n], [lelem(C_HC0), lelem(C_HC1), lelem(C_LIMIT; ls = :dash)],
                       ["unity PF", "volt-var + volt-watt", "2% limit"])
         bottom_legend(fig[2, n + 1], elems, labs)
-        WITH_TITLES && Label(fig[0, 1:(n + 1)], "$a: the unbalance penalty of volt-var depends on the feeder's R/X";
+        WITH_TITLES && Label(fig[0, 1:(n + 1)], "$a: the unbalance penalty of volt-var does not depend on the feeder's R/X";
                              halign = :left, fontsize = 13)
         save_fig(fig, "fig8_rx_test")
+    end
+end
+
+# =======================================================================
+# Figs 9-10 -- need pv_siting_sizing.csv (Block 5 of Small_Network_PV.jl)
+# =======================================================================
+if isnothing(ss)
+    println("  pv_siting_sizing.csv not found in $INDIR -- Figs 9-10 skipped (run Block 5 of Small_Network_PV.jl)")
+else
+    ss_allocs  = [a for a in ALLOCS if !isempty(sel(ss; allocation = a))]
+    ss_ratings = sort(unique([num(r, "rating_kva") for r in ss]))
+    ss_buses   = unique([r["bus"] for r in sort(ss; by = r -> num(r, "distance_m"))])
+    ss_dist    = Dict(r["bus"] => num(r, "distance_m") for r in ss)
+    isempty(ss_allocs) && error("pv_siting_sizing.csv has no allocation to plot")
+
+    function ss_val(alloc, sc, bus, kva, col_)
+        m = filter(r -> r["allocation"] == alloc && r["statcom"] == sc && r["bus"] == bus &&
+                        num(r, "rating_kva") == kva, ss)
+        return length(m) == 1 ? num(m[1], col_) : NaN
+    end
+    ss_hc1(alloc) = num(first(sel(ss; allocation = alloc)), "hc1_kva_per_lot")
+
+    best_bus = last(ss_buses)                           # furthest out: where the unbalance is
+    kva_real = 30.0 in ss_ratings ? 30.0 : first(ss_ratings)     # the commercially available unit
+    kva_max  = last(ss_ratings)
+    C_BAND   = hexcolor("#d9d8d2")
+    mode_elems  = [lelem(m[4]) for m in MODES]
+    mode_labels = ["$(m[2])  $(m[3])" for m in MODES]
+    hc_bal_lab  = rich("HC", subscript("bal"), @sprintf(" (%.2f)", HCBAL))
+
+    # ── Fig 9: sizing. HC2 against rating at the best bus, one panel per allocation ──
+    let
+        n = length(ss_allocs)
+        fig = mkfig(300 * n + 60, 380)
+        axs = Axis[]
+        for (j, a) in enumerate(ss_allocs)
+            ax = Axis(fig[1, j]; xticks = ss_ratings, xlabel = "STATCOM rating at $best_bus (kVA)",
+                      ylabel = j == 1 ? "hosting capacity (kVA per customer)" : "", title = a)
+            vlines!(ax, [kva_real]; color = C_BAND, linewidth = 10)
+            hlines!(ax, [HCBAL];     color = INK2,  linestyle = :dash, linewidth = 1.2)
+            hlines!(ax, [ss_hc1(a)]; color = C_HC1, linewidth = 2)
+            for (sc, code, lab, col) in MODES
+                y = [ss_val(a, sc, best_bus, k, "hc2_kva_per_lot") for k in ss_ratings]
+                lines!(ax, ss_ratings, y; color = col, linewidth = 2)
+                scatter!(ax, ss_ratings, y; color = col, markersize = 8, strokecolor = :white, strokewidth = 1.2)
+            end
+            j > 1 && hideydecorations!(ax; grid = false)
+            push!(axs, ax)
+        end
+        linkyaxes!(axs...)
+        bottom_legend(fig[2, 1:n],
+            [mode_elems..., lelem(C_HC1), lelem(INK2; ls = :dash), pelem(C_BAND)],
+            Any[mode_labels..., rich(HCn(1), " (no device)"), hc_bal_lab,
+                @sprintf("%.0f kVA: commercial unit", kva_real)]; nbanks = 2)
+        WITH_TITLES && Label(fig[0, 1:n], "What each extra kVA of device buys, with the device at $best_bus";
+                             halign = :left, fontsize = 13)
+        save_fig(fig, "fig9_statcom_sizing")
+    end
+
+    # ── Fig 10: siting. HC2 against bus position. Solid = the commercial unit,
+    #    dashed = the largest rating: can size make up for position? ──
+    let
+        n = length(ss_allocs)
+        xd = [ss_dist[b] for b in ss_buses]
+        fig = mkfig(300 * n + 60, 380)
+        axs = Axis[]
+        for (j, a) in enumerate(ss_allocs)
+            ax = Axis(fig[1, j]; xticks = (xd, ss_buses),
+                      xlabel = "STATCOM bus (spaced by distance from the source)",
+                      ylabel = j == 1 ? "hosting capacity (kVA per customer)" : "", title = a)
+            hlines!(ax, [HCBAL];     color = INK2,  linestyle = :dash, linewidth = 1.2)
+            hlines!(ax, [ss_hc1(a)]; color = C_HC1, linewidth = 2)
+            for (sc, code, lab, col) in MODES
+                if kva_max != kva_real
+                    ymax = [ss_val(a, sc, b, kva_max, "hc2_kva_per_lot") for b in ss_buses]
+                    lines!(ax, xd, ymax; color = col, linewidth = 1.5, linestyle = :dot)
+                end
+                y = [ss_val(a, sc, b, kva_real, "hc2_kva_per_lot") for b in ss_buses]
+                lines!(ax, xd, y; color = col, linewidth = 2)
+                scatter!(ax, xd, y; color = col, markersize = 8, strokecolor = :white, strokewidth = 1.2)
+            end
+            j > 1 && hideydecorations!(ax; grid = false)
+            push!(axs, ax)
+        end
+        linkyaxes!(axs...)
+        bottom_legend(fig[2, 1:n],
+            [mode_elems..., lelem(C_HC1), lelem(INK2; ls = :dash), lelem(INK), lelem(INK; ls = :dot)],
+            Any[mode_labels..., rich(HCn(1), " (no device)"), hc_bal_lab,
+                @sprintf("%.0f kVA", kva_real), @sprintf("%.0f kVA", kva_max)]; nbanks = 2)
+        WITH_TITLES && Label(fig[0, 1:n], "What is lost by siting the device away from the unbalance";
+                             halign = :left, fontsize = 13)
+        save_fig(fig, "fig10_statcom_siting")
+    end
+end
+
+# =======================================================================
+# Fig 11 -- needs pv_source.csv (Block 6 of Small_Network_PV.jl)
+# One panel per source voltage. The label under each HC1 point is the limit
+# active there: the question is whether "vuf" gives way to "vmax" as the
+# source voltage rises.
+# =======================================================================
+if isnothing(src)
+    println("  pv_source.csv not found in $INDIR -- Fig 11 skipped (run Block 6 of Small_Network_PV.jl)")
+else
+    src_vms = sort(unique([num(r, "source_vm_pu") for r in src]))
+    function src_row(vm, pvmode, sc, alloc)
+        m = filter(r -> num(r, "source_vm_pu") == vm && r["pv_mode"] == pvmode &&
+                        r["statcom"] == sc && r["allocation"] == alloc, src)
+        return length(m) == 1 ? m[1] : nothing
+    end
+    src_rows_for(vm, pvmode, sc) = [src_row(vm, pvmode, sc, a) for a in ALLOCS]
+    src_hc(rows) = [isnothing(r) ? NaN : num(r, "hc_kva_per_lot") for r in rows]
+
+    let
+        n = length(src_vms)
+        fig = mkfig(330 * n + 40, 420)
+        axs = Axis[]
+        for (j, vm) in enumerate(src_vms)
+            volts = num(first(filter(r -> num(r, "source_vm_pu") == vm, src)), "source_v")
+            ax = Axis(fig[1, j]; xticks = (X, ALLOCS), xticklabelrotation = pi / 4,
+                      xlabel = XLAB,
+                      ylabel = j == 1 ? "hosting capacity (kVA per customer)" : "",
+                      title = @sprintf("source %.2f pu  (%.1f V)", vm, volts))
+            r0 = src_rows_for(vm, "unity", "none")
+            r1 = src_rows_for(vm, "vvw",   "none")
+            for (sc, code, lab, col) in MODES
+                y = src_hc(src_rows_for(vm, "vvw", sc))
+                lines!(ax, X, y; color = col, linewidth = 2)
+                scatter!(ax, X, y; color = col, markersize = 7, strokecolor = :white, strokewidth = 1)
+            end
+            lines!(ax, X, src_hc(r0); color = C_HC0, linewidth = 2, linestyle = :dash)
+            y1 = src_hc(r1)
+            lines!(ax, X, y1; color = C_HC1, linewidth = 2.5)
+            scatter!(ax, X, y1; color = C_HC1, markersize = 8, strokecolor = :white, strokewidth = 1.2)
+            ok1 = [i for i in X if !isnan(y1[i]) && !isnothing(r1[i])]
+            isempty(ok1) || text!(ax, X[ok1], y1[ok1] .- 0.35; text = [r1[i]["active_at_hc"] for i in ok1],
+                                  align = (:center, :top), fontsize = 8, color = INK2)
+            xlims!(ax, 0.5, 5.5)
+            j > 1 && hideydecorations!(ax; grid = false)
+            push!(axs, ax)
+        end
+        linkyaxes!(axs...)
+        ylims!(axs[1], 0, 16)
+        bottom_legend(fig[2, 1:n],
+            [lelem(C_HC0; ls = :dash), lelem(C_HC1), [lelem(m[4]) for m in MODES]...],
+            Any[rich(HCn(0), " unity PF"), rich(HCn(1), " volt-var + volt-watt (label: active limit)"),
+                [rich(HCn(2), "  $(m[2])  $(m[3])") for m in MODES]...]; nbanks = 2)
+        WITH_TITLES && Label(fig[0, 1:n], "Hosting capacity against supply voltage: which limit binds";
+                             halign = :left, fontsize = 13)
+        save_fig(fig, "fig11_source_voltage")
     end
 end
 
