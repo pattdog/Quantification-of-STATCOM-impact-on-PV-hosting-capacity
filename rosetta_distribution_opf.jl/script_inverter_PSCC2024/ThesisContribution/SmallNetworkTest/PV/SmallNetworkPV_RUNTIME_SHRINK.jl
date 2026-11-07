@@ -260,7 +260,8 @@ const LOTS_AT_BUS = Dict("mid1" => 6, "mid2" => 6, "endbus" => 9)
 # --- Operating point: solar noon (methodology section 2) ----------------
 # Calibration used 25% of ADMD. Load and PV are one joint state: never sweep
 # one of them here as if it were time of day.
-const LOAD_FRAC_NOON = 0.25
+const LOAD_FRAC_NOON = 0.25 #0.41 / 4.275      # 0.0959, the SGSC midday mean (was 0.25)
+
 
 # Source voltage. `nothing` keeps the value in the .dss so HC0 stays
 # comparable with the calibration. HC is very sensitive to this (the VVWO
@@ -302,11 +303,11 @@ const HC_TOL = 0.05          # 50 W/lot: well inside the model's own accuracy
 const CALIB_HC0 = Dict((3,3,3) => 11.56, (5,3,1) => 6.01, (7,1,1) => 4.68)
 
 # Which blocks to run. Block 3 needs block 1's HC1 values.
-const RUN_BLOCK0 = true
-const RUN_BLOCK1 = true
-const RUN_BLOCK2 = true
-const RUN_BLOCK2_COST = true # 2b: HC2 when the STATCOM just minimises grid import
-const RUN_BLOCK3 = true
+const RUN_BLOCK0 = false
+const RUN_BLOCK1 = false
+const RUN_BLOCK2 = false
+const RUN_BLOCK2_COST = false # 2b: HC2 when the STATCOM just minimises grid import
+const RUN_BLOCK3 = false
 
 # Block 4: uniform size sweep + R/X test (the mechanism behind "volt-var
 # lowers voltage but raises unbalance"). No bisection: every size is solved
@@ -315,7 +316,7 @@ const RUN_BLOCK4     = true
 const SWEEP_ALLOCS   = [(3,3,3), (5,3,1), (7,1,1)]
 const SWEEP_MODES    = [:unity, :vvw]
 const SWEEP_SIZES    = collect(0.5:0.5:12.0)     # kVA per customer
-const SWEEP_X_SCALES = [1.0, 3.0]                # line reactance multiplier (1.0 = as built)
+const SWEEP_XR_MULTIPLIERS = [1.0, 3.0, 10.0]                # line reactance multiplier (1.0 = as built)
 const SWEEP_BUS      = "endbus"
 const SWEEP_PRINT_X  = 5.0                       # size at which the summary line is printed
 
@@ -325,7 +326,7 @@ const SWEEP_PRINT_X  = 5.0                       # size at which the summary lin
 # as two or three 30 kVA units on one bus under one controller: with equal
 # per-leg limits and sum(P) = 0 on each, this model cannot tell them apart
 # from a single larger unit.
-const RUN_BLOCK5  = true
+const RUN_BLOCK5  = false
 const SITE_BUSES  = ["mid1", "mid2", "endbus"]              # in order of distance from the source
 const SITE_DIST_M = Dict("mid1" => 150.0, "mid2" => 300.0, "endbus" => 550.0)
 const SIZE_KVA    = [15.0, 30.0, 45.0, 60.0, 90.0]          # total rating, three equal legs
@@ -636,11 +637,19 @@ end
 
 # R/X test (block 4): multiply every real line's reactance matrix by k, self
 # and mutual alike, so the phase-plus-neutral loop reactance scales by k and
-# its resistance is untouched. The virtual source branch is left alone.
-function scale_line_reactance!(dm, k)
+# its resistance is scaled to match, keeping |z| equal. The virtual source branch is left alone.
+function scale_line_reactance!(dm, xr_multiplier)
     for (_, br) in dm["branch"]
         startswith(get(br, "name", ""), "_virtual") && continue
-        br["br_x"] = br["br_x"] .* k
+        R, X = br["br_r"], br["br_x"]
+        r1 = R[1, 1] - R[1, 2]
+        x1 = X[1, 1] - X[1, 2]
+        z1 = hypot(r1, x1)
+        t  = xr_multiplier * x1 / r1             # new X/R = multiplier × native X/R
+        r1n = z1 / sqrt(1 + t^2)
+        x1n = t * r1n
+        br["br_r"] = R .* (r1n / r1)
+        br["br_x"] = X .* (x1n / x1)
     end
 end
 
@@ -1026,9 +1035,9 @@ end
 
 function run_pv_case(; alloc, s_lot_kva, pv_mode::Symbol, statcom_mode::Symbol=:none,
                      statcom_kva=STATCOM_KVA, statcom_bus=STATCOM_BUS, objective="cost",
-                     bounds_active=false, x_scale=1.0, source_vm=SOURCE_VM_PU)
+                     bounds_active=false, xr_multiplier=1.0, source_vm=SOURCE_VM_PU)
     dm = base_network(bounds_active)
-    x_scale == 1.0 || scale_line_reactance!(dm, x_scale)
+    xr_multiplier == 1.0 || scale_line_reactance!(dm, xr_multiplier)
     set_source_voltage!(dm, source_vm)
     record_and_maybe_relax_thermal!(dm; relax = !bounds_active)
     set_phase_allocation!(dm, SBASE_KVA; bus_name=LOAD_BUS_NAME, lots_per_phase=alloc)
@@ -1340,7 +1349,7 @@ _src_vm = [b["vm"][1:3] for (_, b) in _probe["bus"] if b["bus_type"] == 3]
 
 println("=" ^ 92)
 println(" SMALL NETWORK PV -- hosting capacity, AS/NZS 4777.2 Australia A")
-println(" sbase = $SBASE_KVA kVA   |   solar noon: load = $(Int(100*LOAD_FRAC_NOON))% of ADMD")
+println(" sbase = $SBASE_KVA kVA   |   solar noon: load = $(100*LOAD_FRAC_NOON)% of ADMD")
 println(" source vm (pu) = $(_src_vm)" * (isnothing(SOURCE_VM_PU) ? "  [from .dss]" : "  [overridden]"))
 println(" lots per (bus, phase) at 3/3/3: ", join(["$(get(_probe["bus"][string(b)], "name", b)) ph$p=$(Int(n))"
                                               for ((b, p), n) in sort(collect(_lots))], ", "))
@@ -1538,7 +1547,7 @@ end
 # If (b) does not happen, the R/X explanation is wrong and needs replacing.
 # -----------------------------------------------------------------------
 const SWEEP_HEADER = [
-    "allocation", "pv_mode", "x_scale", "x_kva_per_lot", "status",
+    "allocation", "pv_mode", "xr_multiplier", "x_kva_per_lot", "status",
     "vmax_v", "vmin_v", "vuf_pct", "v1_v", "v2_v", "pv_p_kw", "pv_q_kvar", "pv_curt_kw",
     "vpn_mag_a", "vpn_mag_b", "vpn_mag_c", "vpn_ang_a", "vpn_ang_b", "vpn_ang_c",
     "vpg_mag_a", "vpg_mag_b", "vpg_mag_c", "vpg_ang_a", "vpg_ang_b", "vpg_ang_c",
@@ -1551,10 +1560,10 @@ if RUN_BLOCK4
     println(" BLOCK 4 -- uniform size sweep + R/X test at $SWEEP_BUS   [no device, limits relaxed]")
     println(" summary line at x = $(SWEEP_PRINT_X) kVA/customer; phase a = the heavy phase; angles are shifts from nominal")
     println("=" ^ 92)
-    for xs in SWEEP_X_SCALES, alloc in SWEEP_ALLOCS
+    for xs in SWEEP_XR_MULTIPLIERS, alloc in SWEEP_ALLOCS
         probe = Dict{Symbol,Any}()
         for mode in SWEEP_MODES, x in SWEEP_SIZES
-            st, gids = run_pv_case(alloc=alloc, s_lot_kva=x, pv_mode=mode, x_scale=xs)
+            st, gids = run_pv_case(alloc=alloc, s_lot_kva=x, pv_mode=mode, xr_multiplier=xs)
             if !solved(st)
                 push!(sweep_rows, Any[alloc_label(alloc), String(mode), xs, x, string(st),
                                       fill(nothing, length(SWEEP_HEADER) - 5)...])
