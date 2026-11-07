@@ -364,11 +364,11 @@ if isnothing(sweep)
 else
     ok = filter(r -> r["status"] == "SOLVED", sweep)
     sweep_series(alloc, mode, xs) = sort(filter(r -> r["allocation"] == alloc && r["pv_mode"] == mode &&
-                                               num(r, "x_scale") == xs, ok);
+                                               num(r, "xr_multiplier") == xs, ok);
                                    by = r -> num(r, "x_kva_per_lot"))
     col_of(mode) = mode == "unity" ? C_HC0 : C_HC1
     sweep_allocs = [a for a in ALLOCS if a != "3/3/3" && !isempty(sweep_series(a, "vvw", 1.0))]
-    xscales = sort(unique(num(r, "x_scale") for r in ok))
+    xscales = sort(unique(num(r, "xr_multiplier") for r in ok))
     isempty(sweep_allocs) && error("pv_sweep.csv has no solved unbalanced allocation to plot")
     mode_legend(pos) = bottom_legend(pos, [lelem(C_HC0), lelem(C_HC1), lelem(C_LIMIT; ls = :dash)],
                                      ["unity PF", "volt-var + volt-watt", "limit"])
@@ -433,7 +433,7 @@ else
         axs = Axis[]
         for (k, xs) in enumerate(xscales)
             ax = Axis(fig[1, k]; xlabel = "PV size (kVA per customer)", ylabel = k == 1 ? "worst VUF (%)" : "",
-                      title = @sprintf("line reactance × %.0f", xs))
+                        title = @sprintf("X/R = %.1f", xs))
             for mode in ("unity", "vvw")
                 curve!(ax, a, mode, xs, "vuf_pct")
             end
@@ -452,7 +452,7 @@ else
             dv = [num(r, "vuf_pct") - u[num(r, "x_kva_per_lot")] for r in v if haskey(u, num(r, "x_kva_per_lot"))]
             c = sc_cols[min(k, length(sc_cols))]
             lines!(axd, xv, dv; color = c, linewidth = 2)
-            push!(elems, lelem(c)); push!(labs, @sprintf("reactance × %.0f", xs))
+            push!(elems, lelem(c)); push!(labs, @sprintf("X/R = %.1f", xs))
         end
         hlines!(axd, [0.0]; color = INK2, linewidth = 1)
         bottom_legend(fig[2, 1:n], [lelem(C_HC0), lelem(C_HC1), lelem(C_LIMIT; ls = :dash)],
