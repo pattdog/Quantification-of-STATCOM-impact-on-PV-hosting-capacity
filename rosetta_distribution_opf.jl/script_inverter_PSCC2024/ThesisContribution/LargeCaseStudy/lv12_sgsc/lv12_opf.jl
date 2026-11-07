@@ -38,6 +38,13 @@ SETTINGS (environment variables)
   LV12_LEAD_A=721.7     transformer LV leads l_4140 / switch_1916 / l_514 (default = 500 kVA
                         per-phase current; 400 reproduces the old uniform-400 A runs)
   LV12_NINIT/LV12_NNEW  number of fleets / applicant orders per fleet
+  LV12_VSRC_V=230.94    source voltage, phase-to-neutral (default 243.88 V = dataset tap 1.025);
+                        any other value skips the OpenDSS port checks, writes to results_v<V>/
+  LV12_TX_KVA=700       transformer rating sensitivity (dataset 500 kVA); leads follow at kVA/(3 x 230.94 V)
+  LV12_MINVMAX_TIE=1e-4 coordinated (minvmax) tie-breaker on device output; 0 = off (default, as
+                        all runs to 22 Oct). Turn on to remove the arbitrary dispatch (23 Oct)
+  LV12_PROFILE=1:3,4:1  also write per-bus voltages (base and final state) for these fleet:order
+                        pairs to lv12_profiles.csv (2-4 extra solves per pair and configuration)
   LV12_LOCAL_VSET=240   voltage set point (V) of the local_vbal_vv controller
   LV12_LOCAL_VV_W=1.0   weight of its voltage-regulation term
   STAGE 11 configurations: HC0, HC1, HC2_D_one_coord/_local, HC2_D_pair_coord/_local,
@@ -152,13 +159,30 @@ const ASSIGN_CSV = joinpath(SCRIPT_DIR, "out", "lv12_assignment.csv")
 # choice writes to results_<source>/ and skips the OpenDSS port checks (stages 3-4,
 # stage-5 gate), whose targets were computed with the stiff source.
 const SOURCE     = get(ENV, "LV12_SOURCE", "stiff")
-const PORT_CHECK = SOURCE == "stiff"
+# Source voltage, phase-to-neutral (15 Oct). The dataset's 243.9 V (pu=1.0561 in the DSS masters)
+# comes from one feeder's transformer tap (1.025 on 11 kV / 433 V). LV12_VSRC_V=230.94 gives a flat
+# 1.00 pu source on the 400 V / 230.94 V base, as on the 4-bus. Only the source magnitude changes:
+# impedances, loads and limits do not. The OpenDSS port checks were computed at 243.9 V, so any
+# other value skips them and writes to results_v<V>/.
+const VSRC_DATASET_V = 1.0561 * 400 / sqrt(3)           # 243.88 V
+const VSRC_V     = parse(Float64, get(ENV, "LV12_VSRC_V", string(VSRC_DATASET_V)))
+const VSRC_SET   = abs(VSRC_V - VSRC_DATASET_V) > 0.01
+const PORT_CHECK = SOURCE == "stiff" && !VSRC_SET
 # LV12_CONFIGS = "HC1,HC2_D_one" runs only those stage-11 configurations (parallel runs in
 # separate terminals); each such run writes to its own subfolder so outputs do not clash.
 const ADOPT_ONLY = filter(!isempty, strip.(split(get(ENV, "LV12_CONFIGS", ""), ",")))
 const PEN_TAG    = haskey(ENV, "LV12_PEN") ? "pen" * string(round(Int, 100 * parse(Float64, ENV["LV12_PEN"]))) : ""
 const THERM_TAG  = get(ENV, "LV12_THERMAL", "1") == "1" ? "" : "nothermal"
-const OUTDIR     = joinpath(SCRIPT_DIR, PORT_CHECK ? "results" : "results_" * SOURCE, PEN_TAG, THERM_TAG,
+const TIE_TAG    = parse(Float64, get(ENV, "LV12_MINVMAX_TIE", "0")) > 0 ? "tie" : ""
+const LIM_TAG    = (haskey(ENV, "LV12_TX_KVA") ? "tx" * ENV["LV12_TX_KVA"] : "_cableEQ") *
+                   (haskey(ENV, "LV12_THERMAL_A") ? "_cable" * ENV["LV12_THERMAL_A"] : "")
+const VV_TAG     = haskey(ENV, "LV12_LOCAL_VV_W") ? "vvw" * ENV["LV12_LOCAL_VV_W"] : ""   # keeps weight sensitivities apart
+const VV_TAG     = haskey(ENV, "LV12_LOCAL_VV_W") ? "vvw" * ENV["LV12_LOCAL_VV_W"] : ""
+const SAMPLE_TAG = let ni = get(ENV, "LV12_NINIT", "10"), nn = get(ENV, "LV12_NNEW", "10")
+                       (ni, nn) == ("5", "5") ? "" : "n$(ni)x$(nn)"   # 5 x 5 keeps the old folders
+                   end
+const SRC_DIR    = (SOURCE == "stiff" ? "" : "_" * SOURCE) * (VSRC_SET ? "_v" * string(round(Int, VSRC_V)) : "")
+const OUTDIR     = joinpath(SCRIPT_DIR, "results" * SRC_DIR, PEN_TAG, THERM_TAG, TIE_TAG, LIM_TAG, VV_TAG, SAMPLE_TAG,
                             isempty(ADOPT_ONLY) ? "" : "adopt_" * join(ADOPT_ONLY, "_"))
 for f in (NET_FILE, REF_CSV, MEN_CSV, PROF_CSV, ASSIGN_CSV)
     isfile(f) || error("missing input: $f")
@@ -225,7 +249,7 @@ const THERM_TOL = 1e-3
 # criteria when THERMAL_ON[] (LV12_THERMAL=0 switches them off; LV12_THERMAL_A sets A).
 const THERMAL_ON = Ref(get(ENV, "LV12_THERMAL", "1") == "1")
 const THERMAL_A  = parse(Float64, get(ENV, "LV12_THERMAL_A", "400"))
-const TX_KVA     = 500.0
+const TX_KVA     = parse(Float64, get(ENV, "LV12_TX_KVA", "500"))   # dataset: 500 kVA; other values = sensitivity (lead rating follows)
 # Transformer LV leads (15 Oct): l_4140, switch_1916_closed and l_514 (0.25 m, 1 m, 0.24 m,
 # b908 -> b1122 -> b238 -> b800) carry BOTH circuits' current, i.e. they are the transformer's
 # tails, not feeder cable. They are rated at the transformer's per-phase current,
@@ -233,8 +257,31 @@ const TX_KVA     = 500.0
 # (uniform 400 A) behaviour as a sensitivity.
 const TX_LEADS   = Set(["l_4140", "switch_1916_closed", "l_514"])
 const TX_LEAD_A  = parse(Float64, get(ENV, "LV12_LEAD_A", string(round(TX_KVA * 1000 / (3 * 230.94), digits=1))))
-branch_rating_a(br) = lowercase(get(br, "name", "")) in TX_LEADS ? TX_LEAD_A : THERMAL_A
-
+# Cable ratings (26 Oct): Energex STNW3369 Release 5 (12/06/2026), continuous in ducts,
+# 30 degC soil, 1.2 K.m/W, 90 degC. 240 Al 320 A, 16 Cu 88 A (s7.3/7.4); 400 Al triplex 472 A (s7.1);
+# generic/lv assumed = 400 Al triplex (identical impedance data). LV12_THERMAL_A=<A> = uniform override.
+const CABLE_RATING_A = Dict("uglv_240al" => 320.0, "ugsc_16cu" => 88.0,
+                            "ughv_400al" => 472.0, "generic/lv" => 472.0)
+const UNIFORM_CABLES = haskey(ENV, "LV12_THERMAL_A")
+const LINE_CODE = let d = Dict{String,String}()
+    for f in ("Lines.dss", "Switches.dss"), l in eachline(joinpath(SCRIPT_DIR, "reference_rebuild", f))
+        m = match(r"new\s+line\.(\S+).*?linecode=(\S+)"i, l)
+        m === nothing || (d[lowercase(m[1])] = lowercase(m[2]))
+    end
+    d
+end
+function cable_rating_a(name)
+    code = get(LINE_CODE, name, "")
+    for (k, a) in CABLE_RATING_A
+        startswith(code, k) && return a
+    end
+    error("no cable rating for branch $name (linecode '$code')")
+end
+function branch_rating_a(br)
+    name = lowercase(get(br, "name", ""))
+    name in TX_LEADS && return TX_LEAD_A
+    return UNIFORM_CABLES ? THERMAL_A : cable_rating_a(name)
+end
 # Bisection on uniform kVA per customer
 const HC_LO  = 0.0
 const HC_HI  = 6.0
@@ -717,6 +764,11 @@ function set_source_impedance!(data_eng)
         X[i, j] = imag(i == j ? zs : zm)
     end
     vs["rs"] = R; vs["xs"] = X
+    # source voltage: scale the parsed phase magnitudes (DSS pu=1.0561) to VSRC_V; the neutral
+    # entry, if present, is 0 and stays 0. Angles are untouched.
+    vm = Vector{Float64}(vs["vm"])
+    vm[1:3] .*= VSRC_V / VSRC_DATASET_V
+    vs["vm"] = vm
     return SRC_PARSED[]
 end
 
@@ -839,7 +891,19 @@ function add_minvmax_objective!()
             JuMP.@constraint(model, (vr[p, i] - vr[4, i])^2 + (vi[p, i] - vi[4, i])^2 <= t)
         end
     end
-    JuMP.@objective(model, Min, t)
+    # Tie-breaker (23 Oct, LV12_MINVMAX_TIE, default 0 = off): min-max V is degenerate whenever the
+    # feeder maximum sits where the device cannot act (e.g. b733 on circuit A for a circuit-B unit):
+    # every dispatch that keeps its own circuit below that maximum is optimal, and Ipopt returns an
+    # arbitrary one (fig10: P jumps between solves; fig18: phase B dragged to 231.5 V). A small
+    # penalty on device output picks the least-effort dispatch among (near-)optimal ones.
+    # t ~ 1.2 pu^2, full output ~ 0.03 pu^2 per device: 1e-4 costs at most ~3e-6 pu^2 (~0.0004 V).
+    w = parse(Float64, get(ENV, "LV12_MINVMAX_TIE", "0"))
+    sc = [(id, g) for (id, g) in ref[:gen] if get(g, "type", "") == "STATCOM"]
+    if w > 0 && !isempty(sc)
+        JuMP.@objective(model, Min, t + w * sum(pg[c, id]^2 + qg[c, id]^2 for (id, _) in sc for c in 1:3))
+    else
+        JuMP.@objective(model, Min, t)
+    end
     return t
 end
 
@@ -1283,7 +1347,7 @@ println("=" ^ 96)
 println(" LV12_248 OPF -- staged port check, then HC0 / HC1 / HC2")
 println(" sbase = $SBASE_KVA kVA | loads: draw $LOAD_DRAW, $(HOUR):00, pf $LOAD_PF | source vm (pu) = $(_src_vm) | source model: $SOURCE")
 println(" criteria: $(V_MIN_V)-$(V_MAX_V) V phase-to-neutral (+$(V_TOL_V) V), VUF $(100*VUF_LIMIT)%",
-        THERMAL_ON[] ? ", thermal $(round(Int, THERMAL_A)) A per conductor (assumed), transformer leads $(round(Int, TX_LEAD_A)) A, transformer $(round(Int, TX_KVA)) kVA" : ", thermal NOT checked")
+        THERMAL_ON[] ? ", thermal $(UNIFORM_CABLES ? "$(round(Int, THERMAL_A)) A uniform" : "Energex STNW3369"), transformer leads $(round(Int, TX_LEAD_A)) A, transformer $(round(Int, TX_KVA)) kVA" : ", thermal NOT checked")
 println(" STATCOM: $(STATCOM_KVA) kVA at $STATCOM_BUS | core files: ",
         USE_COMPILED_CORE ? "compiled once" : "include() per solve")
 println("=" ^ 96)
@@ -1529,6 +1593,24 @@ const ADOPT_CONFIGS = [   # (label, pv_mode, statcom_mode, kVA per device, sites
     ("HC2_D_one_vbalvv",   HC1_MODE, :pq, 30.0, ["b3278"],          "local_vbal_vv"),
     ("HC2_D_pair_vbal",    HC1_MODE, :pq, 30.0, ["b3278", "b3162"], "local_vbal"),
     ("HC2_D_pair_vbalvv",  HC1_MODE, :pq, 30.0, ["b3278", "b3162"], "local_vbal_vv"),
+    # circuit-A unit at b733 instead of b3162 (15 Oct): b733 is the most voltage-sensitive
+    # circuit-A site in the OpenDSS screen (b3162 ranks 43rd of 134) and where fleet 5's
+    # existing PV breaches; with b3162, no LOCAL pair rescued fleet 5 (25-order run, 15 Oct)
+    ("HC2_D_pair733_coord",  HC1_MODE, :pq, 30.0, ["b3278", "b733"], "minvmax"),
+    ("HC2_D_pair733_vbal",   HC1_MODE, :pq, 30.0, ["b3278", "b733"], "local_vbal"),
+    ("HC2_D_pair733_vbalvv", HC1_MODE, :pq, 30.0, ["b3278", "b733"], "local_vbal_vv"),
+    # one unit on circuit A only (22 Oct): the mirror of the b3278 configurations
+    ("HC2_D_oneA733_coord",  HC1_MODE, :pq, 30.0, ["b733"],          "minvmax"),
+    ("HC2_D_oneA733_vbal",   HC1_MODE, :pq, 30.0, ["b733"],          "local_vbal"),
+    # device modes on the real feeder (22 Oct): B = reactive only (both signs), C = real-power
+    # exchange only (ΣP = 0); D (P+Q) above. Bc dropped. Tests H1 (D > C > B) and H4 (Q-only
+    # gains where overvoltage binds) from the four-bus chapter, for both control tiers.
+    ("HC2_B_one_coord",  HC1_MODE, :qonly, 30.0, ["b3278"],          "minvmax"),
+    ("HC2_C_one_coord",  HC1_MODE, :ponly, 30.0, ["b3278"],          "minvmax"),
+    ("HC2_B_one_vbal",   HC1_MODE, :qonly, 30.0, ["b3278"],          "local_vbal"),
+    ("HC2_C_one_vbal",   HC1_MODE, :ponly, 30.0, ["b3278"],          "local_vbal"),
+    ("HC2_B_pair_coord", HC1_MODE, :qonly, 30.0, ["b3278", "b3162"], "minvmax"),
+    ("HC2_C_pair_coord", HC1_MODE, :ponly, 30.0, ["b3278", "b3162"], "minvmax"),
     # device at b800, the LV busbar just downstream of the transformer leads: coordinated
     # upper bound for a substation-sited unit (relevant where thermal limits bind, 70-80%)
     ("HC2_D_head_coord",   HC1_MODE, :pq, 30.0, ["b800"],           "minvmax"),
@@ -1557,6 +1639,28 @@ function adoption_orders(n; pen=ADOPT_PEN, n_init=ADOPT_N_INIT, n_new=ADOPT_N_NE
 end
 
 # Does the network pass with exactly the customers `idx` carrying PV?
+# Per-bus voltage profiles (22 Oct) for the voltage-profile and map figures. LV12_PROFILE="1:3,4:1"
+# re-solves, for those fleet:order pairs and every configuration run, (i) the existing fleet alone
+# ("base": the same households in every configuration) and (ii) the configuration's own final
+# compliant state ("final"), and writes every bus-phase V_pn and the bus NEV to lv12_profiles.csv.
+const PROFILE_KEYS = Set(Tuple(parse.(Int, split(strip(x), ":"))) for x in
+                         split(get(ENV, "LV12_PROFILE", ""), ",") if occursin(":", x))
+profile_rows = Vector{Any}[]
+function dump_profile!(label, i, j, state, r)
+    r.m === nothing && return nothing        # no solution to read (enforced route infeasible)
+    for (b, bus) in ref[:bus]
+        is_real_bus(bus) || continue
+        t = bus["terminals"]; 4 in t || continue
+        vb_V = get(bus, "vbase", 0.4 / sqrt(3)) * 1000
+        vrn, vin = JuMP.value(vr[4, b]), JuMP.value(vi[4, b])
+        for p in 1:3
+            p in t || continue
+            v = hypot(JuMP.value(vr[p, b]) - vrn, JuMP.value(vi[p, b]) - vin) * vb_V
+            push!(profile_rows, Any[label, i, j, state, r.pass, bus_name(b), p, v, hypot(vrn, vin) * vb_V])
+        end
+    end
+end
+
 function adopt_pass_set(idx, names, cfg, tag)
     _, pvm, scm, kva, sites, disp = cfg
     return hc_point(ADOPT_KVA; pv_mode=pvm, statcom_mode=scm, stage=tag,
@@ -1663,6 +1767,15 @@ if 11 in STAGES
             n_acc = Int[]; n_first = Int[]; over = 0
             for (i, j, kk, perm) in orders
                 r = adopt_refuse_continue(perm, cust_names, kk, cfg, "11 $label i=$i j=$j")
+                if (i, j) in PROFILE_KEYS
+                    rb = adopt_pass_set(perm[1:kk], cust_names, cfg, "11 $label i=$i j=$j profile base")
+                    dump_profile!(label, i, j, "base", rb)
+                    if !r.already_over
+                        rf = adopt_pass_set(vcat(perm[1:kk], r.accepted), cust_names, cfg,
+                                            "11 $label i=$i j=$j profile final")
+                        dump_profile!(label, i, j, "final", rf)
+                    end
+                end
                 acc_nm, ref_nm = cust_names[r.accepted], cust_names[r.refused]
                 fr = isempty(r.refused) ? "" : cust_names[r.refused[1]]
                 push!(adopt_rows, Any[label, i, j, kk, r.already_over, r.first, length(r.accepted),
@@ -1706,6 +1819,8 @@ end
 
 # --- OUTPUT --------------------------------------------------------------
 println()
+isempty(profile_rows) || write_csv(joinpath(OUTDIR, "lv12_profiles.csv"),
+    ["config", "init", "order", "state", "pass", "bus", "phase", "vpn_v", "nev_v"], profile_rows)
 isempty(adopt_rows) || write_csv(joinpath(OUTDIR, "lv12_adoption.csv"),
     ADOPT_METHOD == :refuse_continue ?
     ["config", "init", "order", "k0", "already_over", "n_before_first_refusal", "n_accepted",
