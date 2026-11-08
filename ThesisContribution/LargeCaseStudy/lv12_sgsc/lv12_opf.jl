@@ -1551,7 +1551,7 @@ if 10 in STAGES && haskey(HC, :hc0) && !isnan(HC[:hc0].hc)
 end
 
 # --- STAGE 11: sequential random adoption from an existing fleet ----------
-# HC as a COUNT (claude/lv12_hc_procedure.md). ADOPT_PEN of the customers already
+# HC as a COUNT  ADOPT_PEN of the customers already
 # have a 5 kVA inverter (chosen at random, one seed per "init" draw); the remaining
 # customers apply one at a time in a random order (one seed per "new" draw). HC_new =
 # how many applicants connect before the first limit breach. The same orders are used
