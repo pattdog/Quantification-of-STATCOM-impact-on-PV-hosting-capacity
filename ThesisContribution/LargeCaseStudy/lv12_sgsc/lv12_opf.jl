@@ -1,100 +1,132 @@
 #=
 ==============================================================================
-LV12_248 OPF -- hosting capacity on the real feeder, staged and self-checking
+LV12_248 OPF -- PV hosting capacity with and without a STATCOM on a real
+four-wire feeder, staged and checked against OpenDSS
 ==============================================================================
-Same pipeline as Small_Network_PV.jl (variables.jl -> constraints_unified.jl ->
-add_pv_control! -> objectives_FIXED.jl, core files compiled once), applied to
-LV12_248 (Geth et al. 2025) with measured SGSC loads (draw 45, 13:00).
-
-Every generic function below is copied VERBATIM from Small_Network_PV.jl
-(add_men!, add_statcom!, add_neutral_referenced_bounds!, add_pv_control!,
-pv_dispatch, evaluate_point, the bisection, the compile-once loader, ...).
-What is new is only what the 4-bus layout cannot express: one PV unit per
-customer, loads from the SGSC files, and the staged checks.
-
-STAGES -- each prints PASS/FAIL against OpenDSS and stops at the first failure
+Applies the four-bus pipeline (variables.jl -> constraints_unified.jl ->
+add_pv_control! -> objectives_FIXED.jl, core files compiled once) to LV12_248
+(Geth et al. 2025: 248 buses, 121 customers, MEN at every customer) with
+measured SGSC household loads at 13:00 (draw 45).
+ 
+The generic functions (add_men!, add_statcom!, add_neutral_referenced_bounds!,
+add_pv_control!, pv_dispatch, evaluate_point, the bisection and the
+compile-once loader) are shared with the four-bus script
+SmallNetworkPV_RUNTIME_SHRINK.jl. Added here: one PV unit per customer, loads
+from the SGSC files, cable ratings by line code, and the staged checks.
+ 
+STAGES -- each check prints PASS/FAIL and the run stops at the first failure.
+Default run: 1-6 and 11 (edit STAGES to add 7-10). Stages 3-4 need the stiff
+source at the dataset voltage, where the OpenDSS reference values apply.
 ---------------------------------------------------------------------------
   1  parse Master_pmd.dss       248 buses, 247 four-wire lines, 121 loads,
                                 56.829 kW, source neutral grounded
-  2  earthing, source           121 MEN bonds = load buses = men_buses.csv;
-                                source impedance in the math model = SRC_Z1/Z0
+  2  earthing, source           121 MEN bonds at the load buses (men_buses.csv);
+                                source impedance in the model = SRC_Z1/SRC_Z0
   3  power flow, no PV          source P/Q, every bus V_pn and NEV vs OpenDSS
   4  121 x 3.0 kW PV, unity PF  the same, near the voltage limit
   5  HC0 (uniform, unity PF)    3.025 kW/customer (OpenDSS, same 253.05 V test)
-  6  HC1 (volt-var + volt-watt) new result; droop error checked
-  7  HC2 per STATCOM mode       new result; 30 kVA at b733
-  8  siting sweep               HC2 for B/C/D at 7 buses (lv12_siting.csv)
-  9  one vs two devices         60 kVA at b3278 vs 2 x 30 kVA, one per branch (lv12_pairs.csv)
- 10  unity-PF baseline          STATCOM on top of HC0 instead of HC1 (lv12_base0.csv)
- 11  sequential adoption        55% existing 5 kVA fleet, then random applicants; HC = how many more
-                                connect, per configuration (lv12_adoption.csv; quick test with
-                                LV12_NINIT=1 LV12_NNEW=2)
-
-SETTINGS (environment variables)
-  LV12_PEN=0.55         existing penetration (nested fleets; outputs in results/pen55/)
-  LV12_CONFIGS=HC1,...  run only these stage-11 configurations (parallel terminals)
-  LV12_THERMAL=0        switch off thermal (400 A/conductor) + 500 kVA transformer limits
-  LV12_THERMAL_A=400    assumed conductor rating, amps (feeder cables)
-  LV12_LEAD_A=721.7     transformer LV leads l_4140 / switch_1916 / l_514 (default = 500 kVA
-                        per-phase current; 400 reproduces the old uniform-400 A runs)
-  LV12_NINIT/LV12_NNEW  number of fleets / applicant orders per fleet
-  LV12_VSRC_V=230.94    source voltage, phase-to-neutral (default 243.88 V = dataset tap 1.025);
-                        any other value skips the OpenDSS port checks, writes to results_v<V>/
-  LV12_TX_KVA=700       transformer rating sensitivity (dataset 500 kVA); leads follow at kVA/(3 x 230.94 V)
-  LV12_MINVMAX_TIE=1e-4 coordinated (minvmax) tie-breaker on device output; 0 = off (default, as
-                        all runs to 22 Oct). Turn on to remove the arbitrary dispatch (23 Oct)
-  LV12_PROFILE=1:3,4:1  also write per-bus voltages (base and final state) for these fleet:order
-                        pairs to lv12_profiles.csv (2-4 extra solves per pair and configuration)
-  LV12_LOCAL_VSET=240   voltage set point (V) of the local_vbal_vv controller
-  LV12_LOCAL_VV_W=1.0   weight of its voltage-regulation term
-  STAGE 11 configurations: HC0, HC1, HC2_D_one_coord/_local, HC2_D_pair_coord/_local,
-    HC2_D_one/pair_vbal, _vbalvv, HC2_D_head_coord
-    (coord = minimise the feeder's highest voltage, upper bound, network limits enforced if
-     needed; every local_* = the device sees only its own connection and NO network limit
-     is imposed on it -- pass/fail is judged afterwards:
-       local   |V2|^2 at the PCC          vbal  |V0pn|^2+|V2|^2 at the PCC
-       vbalvv  vbal + V1 regulation above LV12_LOCAL_VSET;  head = device at b800)
-    e.g. LV12_CONFIGS=HC1,HC2_D_one_coord,HC2_D_one_vbal,HC2_D_one_vbalvv
-SOURCE SENSITIVITY: LV12_SOURCE=isc100k|tx_dataset|tx_4pct julia --project=<root> lv12_opf.jl
-  (default stiff; other sources write to results_<source>/ and skip the OpenDSS port checks)
-
-Stages 1-5 are the port check: nothing new is claimed until they pass.
-
-WHERE TO PUT IT
+  6  HC1 (volt-var + volt-watt) droop error checked at the solution
+  7  HC2 per STATCOM mode       30 kVA at b733
+  8  siting sweep               HC2 for modes B/C/D at 7 buses (lv12_siting.csv)
+  9  one vs two devices         60 kVA at b3278 vs 2 x 30 kVA, one per branch
+                                (lv12_pairs.csv)
+ 10  unity-PF baseline          STATCOM on top of HC0 instead of HC1
+                                (lv12_base0.csv)
+ 11  sequential adoption        55% of customers start with a 5 kVA system; the
+                                rest apply one at a time in random order. Each
+                                applicant is solved with everyone accepted so
+                                far and refused if any limit is breached, and
+                                the next is still assessed (refuse and
+                                continue). Records the count before the first
+                                refusal and the total accepted, per
+                                configuration (lv12_adoption.csv)
+ 
+STAGE 11 CONFIGURATIONS
 ---------------------------------------------------------------------------
-Put the whole lv12_sgsc/ folder next to Small_Network_PV.jl (anywhere below
-the folder holding core/variables.jl and below your Project.toml). The core
-files and the project are found exactly as Small_Network_PV.jl finds them.
-Override with ENV["THESIS_CORE_DIR"] / ENV["THESIS_PROJECT"] if needed.
-
-    julia --project=<thesis root> lv12_sgsc/lv12_opf.jl
-
-DECISIONS, AND WHY
+  HC0, HC1                      no device; inverters at unity PF / with
+                                volt-var + volt-watt
+  HC2_<mode>_<sites>_<control>  HC1 plus 30 kVA STATCOM(s)
+    mode     D = real and reactive power, C = real-power exchange between
+             phases only (sum P = 0), B = reactive only
+    sites    one = b3278; pair = b3278 + b3162; pair733 = b3278 + b733;
+             oneA733 = b733; head = b800 (LV busbar after the transformer leads)
+    control  coord  = coordinated: minimise the feeder's highest voltage, with
+                      the network limits enforced if needed
+             local  = |V2|^2 at the device's own bus
+             vbal   = |V0pn|^2 + |V2|^2 at its own bus
+             vbalvv = vbal + positive-sequence volt-var above LV12_LOCAL_VSET
+             Local controllers see only their own connection and no network
+             limit; pass/fail is judged afterwards against every limit.
+  e.g. LV12_CONFIGS=HC1,HC2_D_one_coord,HC2_D_one_vbal
+ 
+SETTINGS (environment variables; the results folder is named after them)
 ---------------------------------------------------------------------------
-1. THERMAL LIMITS (14 Oct): ON by default with an ASSUMED 400 A per conductor on
-   every branch (the dataset has no ratings), plus the dataset's 500 kVA
-   transformer as a source apparent-power limit. Caution: at 55% (67 x 5 kW,
-   unity PF) the circuit head cables l_514 / l_4140 already carry ~400-500 A in
-   OpenDSS, so 400 A binds at the baseline in most fleets. LV12_THERMAL=0 turns
-   both off (voltage + VUF only); LV12_THERMAL_A changes the rating.
-2. SOURCE: stiff (OpenDSS default impedance, 0.08 mOhm), neutral solidly
-   earthed with the 4_Bus_Small.dss near-zero reactor. The impedance is SET
-   in Julia (SRC_Z1/SRC_Z0, set_source_impedance!) and checked in stage 2:
-   PMD's parser otherwise computes OpenDSS's default fault level at 115 kV
-   (1.60 + j6.42 Ohm) and the loaded feeder has no solution. Your earlier LV12
-   folder used ISC3=100000 (2.3 mOhm): that gives HC0 ~2.5% lower, and is the
-   whole 2.71-vs-2.78 gap. Keeping the dataset's transformer resistance
-   (3 mOhm) gives ~13% lower. Open question for Fred.
+  Default results folder: results/_cableEQ/ (Energex ratings, 10 x 10).
+  LV12_CONFIGS=a,b,...   run only these stage-11 configurations   adopt_a_b/
+  LV12_NINIT, LV12_NNEW  existing fleets x applicant orders per fleet
+                         (default 10 x 10; seeds per fleet and order)  n<i>x<j>/
+                         (no folder for 5 x 5)
+  LV12_PEN=0.55          existing penetration                        pen<%>/
+  LV12_THERMAL=0         cable and transformer limits off            nothermal/
+  LV12_THERMAL_A=<A>     uniform conductor rating instead of the
+                         Energex ratings (1e6 = cables unrated)      _cable<A>
+  LV12_TX_KVA=500        transformer rating; the leads follow at
+                         kVA / (3 x 230.94 V)                         tx<kVA>
+  LV12_LEAD_A=<A>        transformer lead rating override (default follows
+                         LV12_TX_KVA: 721.7 A at 500 kVA)
+  LV12_VSRC_V=243.88     source voltage, phase-to-neutral (dataset tap 1.025);
+                         other values skip the OpenDSS checks         results_v<V>/
+  LV12_SOURCE=stiff      or isc100k | tx_dataset | tx_4pct; other sources skip
+                         the OpenDSS checks                           results_<source>/
+  LV12_MINVMAX_TIE=0     tie-breaker weight on device output in the
+                         coordinated objective; 0 = off               tie/
+  LV12_DISPATCH=minvmax  stage 7-10 dispatch: minvmax or cost (loss minimising)
+  LV12_LOCAL_VSET=240    vbalvv voltage set point (V)
+  LV12_LOCAL_VV_W=1.0    vbalvv weight on voltage regulation          vvw<w>/
+  LV12_ADOPT_METHOD      refuse_continue (default) | sequential | bisect
+  LV12_PROFILE=1:3,4:1   also write per-bus voltages for these fleet:order
+                         pairs (lv12_profiles.csv)
+  THESIS_CORE_DIR, THESIS_PROJECT  override where core/ and Project.toml are found
+ 
+MODELLING CHOICES
+---------------------------------------------------------------------------
+1. THERMAL LIMITS: on by default. The dataset has no conductor ratings, so
+   cables are rated by line code from Energex STNW3369 (Release 5, 12/06/2026,
+   continuous in ducts): 240 mm^2 Al 320 A, 16 mm^2 Cu service 88 A, 400 mm^2 Al
+   triplex 472 A, generic/lv 472 A (assumed; its impedance data match the
+   400 mm^2 triplex). The transformer leads (l_4140, switch_1916_closed, l_514)
+   carry both circuits and are rated at the transformer's per-phase current,
+   721.7 A for the dataset's 500 kVA; the 500 kVA rating also applies as a
+   source apparent-power limit.
+2. SOURCE: stiff (OpenDSS default impedance at 0.4 kV, about 0.08 mOhm),
+   neutral solidly earthed, at the dataset's 243.88 V. The impedance is set in
+   Julia (set_source_impedance!) and checked in stage 2, because PMD's parser
+   otherwise computes OpenDSS's default fault level at 115 kV (1.60 + j6.42
+   Ohm), with which the loaded feeder has no solution. A 100 kA fault level
+   lowers HC0 by about 2.5%, and the dataset's transformer resistance (3 mOhm)
+   by about 13% (LV12_SOURCE sensitivities).
 3. MEN: 10 ohm per customer; one customer per bus, so no paralleling.
 4. PV: one single-phase unit per customer, on the customer's own bus and
-   phase, p_avail = S (clipped inverter at noon). Uniform size here;
-   count-based HC with placement draws comes after stage 5 passes.
-5. CRITERIA as Small_Network_PV.jl: 216.2-253.0 V phase-to-neutral (+0.05 V
-   post-hoc tolerance), VUF 2%. STATCOM HC: route 1 (cost dispatch, checked
-   post hoc) then route 2 (bounds enforced).
-
-Not executed by its author (no Julia where it was written). Expect small
-interface fixes on the first run; the stage checks say where.
+   phase, p_avail = S (clipped inverter at noon). AS/NZS 4777.2:2020
+   Australia A volt-var (207/220/240/258 V, +44%/-60%) and volt-watt
+   (253 -> 260 V, 100% -> 20%), reactive priority. Stages 5-10 search a
+   uniform size per customer by bisection; stage 11 uses 5 kVA systems.
+5. LOADS: constant power at 0.95 lagging, SGSC draw 45 at 13:00.
+6. CRITERIA (as in the four-bus study): 216.2-253.0 V phase-to-neutral
+   (+0.05 V tolerance), VUF 2%, and the thermal limits in 1.
+ 
+RUNNING
+---------------------------------------------------------------------------
+core/ (the folder holding core/variables.jl) and the Julia project (the
+outermost Project.toml) are found by searching upward from this folder.
+Inputs are read from reference_rebuild/ and out/ next to this script, and
+results are written to results/ next to it. From the repository root:
+ 
+    LV12_NINIT=5 LV12_NNEW=10 LV12_CONFIGS=HC1 julia --project=. \
+        ThesisContribution/LargeCaseStudy/lv12_sgsc/lv12_opf.jl
+ 
+Stages 1-5 are the port check: nothing new is computed until the PMD model
+reproduces OpenDSS.
 ==============================================================================
 =#
 
