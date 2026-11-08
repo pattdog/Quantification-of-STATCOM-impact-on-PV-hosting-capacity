@@ -3,3 +3,4 @@ manifest.toml
 /data/             # If your network data is huge, keep it local
 *.log
 .ipynb_checkpoints/
+*.zip

@@ -1,0 +1,36 @@
+block,allocation,pv_mode,statcom,scenario,hc_kva_per_lot,capped,active_at_hc,first_fail,n_solves,calib_hc0,delta_hc,frac_attainable
+1,3/3/3,unity,none,A,10.703125,false,vmax,vmax endbus ph3,11,11.56,,
+1,3/3/3,vv,none,A,13.3203125,false,vmax+therm,therm line1 c1,11,,,
+1,3/3/3,vvw,none,A,13.3203125,false,vmax+therm,therm line1 c3,11,,,
+1,4/3/2,unity,none,A,7.03125,false,vmax,vmax endbus ph1,11,,,
+1,4/3/2,vv,none,A,10.078125,false,vmax,vmax endbus ph1,11,,,
+1,4/3/2,vvw,none,A,10.078125,false,vmax,vmax endbus ph1,11,,,
+1,5/3/1,unity,none,A,5.2734375,false,vmax,vmax endbus ph1,11,6.01,,
+1,5/3/1,vv,none,A,6.4453125,false,vuf,vuf endbus,11,,,
+1,5/3/1,vvw,none,A,6.4453125,false,vuf,vuf endbus,11,,,
+1,6/2/1,unity,none,A,4.453125,false,vmax,vmax endbus ph1,11,,,
+1,6/2/1,vv,none,A,5.6640625,false,vuf,vuf endbus,11,,,
+1,6/2/1,vvw,none,A,5.6640625,false,vuf,vuf endbus,11,,,
+1,7/1/1,unity,none,A,3.90625,false,vmax,vmax endbus ph1,11,4.68,,
+1,7/1/1,vv,none,A,4.921875,false,vuf,vuf endbus,11,,,
+1,7/1/1,vvw,none,A,4.921875,false,vuf,vuf endbus,11,,,
+2,3/3/3,vvw,qonly,B,13.4246826171875,false,vmax+therm,therm line1 c1,10,,0.1043701171875,
+2,3/3/3,vvw,qcap,Bc,13.4246826171875,false,vmax+therm,therm line1 c1,10,,0.1043701171875,
+2,3/3/3,vvw,ponly,C,13.346405029296875,false,vmax+therm,therm line1 c2,10,,0.026092529296875,
+2,3/3/3,vvw,pq,D,13.4246826171875,false,vmax+therm,therm line1 c1,10,,0.1043701171875,
+2,4/3/2,vvw,qonly,B,11.58966064453125,false,vmax+vuf+therm+device,vuf endbus,10,,1.51153564453125,0.4662085843373494
+2,4/3/2,vvw,qcap,Bc,10.81451416015625,false,vmax+vuf,vuf endbus,10,,0.73638916015625,0.22712725903614459
+2,4/3/2,vvw,ponly,C,12.9461669921875,false,vmax+therm+device,vmax endbus ph3,10,,2.8680419921875,0.8846009036144579
+2,4/3/2,vvw,pq,D,13.023681640625,false,vmax+therm+device,therm line1 c1,10,,2.945556640625,0.9085090361445783
+2,5/3/1,vvw,qonly,B,7.5307464599609375,false,vmax+vuf+device,vuf endbus,11,,1.0854339599609375,0.15788130326704544
+2,5/3/1,vvw,qcap,Bc,7.027740478515625,false,vmax+vuf+device,vuf endbus,11,,0.582427978515625,0.084716796875
+2,5/3/1,vvw,ponly,C,10.178146362304688,false,vuf+device,vuf endbus,11,,3.7328338623046875,0.5429576526988636
+2,5/3/1,vvw,pq,D,10.68115234375,false,vmax+vuf+device,vuf endbus,11,,4.23583984375,0.6161221590909091
+2,6/2/1,vvw,qonly,B,6.504058837890625,false,vmax+vuf+device,vuf endbus,11,,0.839996337890625,0.10971380739795919
+2,6/2/1,vvw,qcap,Bc,6.0280609130859375,false,vmax+vuf,vuf endbus,11,,0.3639984130859375,0.04754264987244898
+2,6/2/1,vvw,ponly,C,8.408050537109375,false,vuf+device,vuf endbus,11,,2.743988037109375,0.3583984375
+2,6/2/1,vvw,pq,D,9.276046752929688,false,vmax+vuf+device,vuf endbus,11,,3.6119842529296875,0.47176937181122447
+2,7/1/1,vvw,qonly,B,5.68756103515625,false,vmax+vuf+device,vuf endbus,11,,0.76568603515625,0.09117005813953488
+2,7/1/1,vvw,qcap,Bc,5.21636962890625,false,vmax+vuf,vuf endbus,11,,0.29449462890625,0.035065406976744186
+2,7/1/1,vvw,ponly,C,7.189483642578125,false,vmax+vuf+device,vuf endbus,11,,2.267608642578125,0.2700036337209302
+2,7/1/1,vvw,pq,D,8.072967529296875,false,vmax+vuf+device,vuf endbus,11,,3.151092529296875,0.3751998546511628

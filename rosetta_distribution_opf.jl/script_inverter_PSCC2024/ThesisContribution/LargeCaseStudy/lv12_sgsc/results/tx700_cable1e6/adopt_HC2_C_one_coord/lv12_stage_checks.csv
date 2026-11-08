@@ -1,0 +1,38 @@
+stage,check,value,target,tolerance,pass
+1,buses,248 (expect 248),,,true
+1,lines incl. 7 ex-switches,247 (expect 247),,,true
+1,no switch objects,0,,,true
+1,every line four-wire,conductors per line: [4],,,true
+1,no fifth conductor,highest terminal id 4,,,true
+1,"121 loads, phase-to-neutral",121 loads,,,true
+1,total load P (kW),56.82899999999998,56.829,0.01,true
+1,total load Q (kvar),18.6787,18.679,0.01,true
+1,source neutral grounded at b908,grounded = [4],,,true
+2,MEN bonds,121 bonds at 10.0 Ω,,,true
+2,MEN buses = load buses = men_buses.csv,,,,true
+2,math model loads,121,,,true
+2,math model total load (kW),56.829000000000015,56.829,0.01,true
+2,"set_loads!(draw 45, 13:00) total (kW)",56.82900000000001,56.829,0.01,true
+2,source impedance,self 0.0202 + j0.0735 mOhm in the model (set 0.0202 + j0.0735; PMD had parsed 2.018e-05 + j7.347e-05 Ohm),,,true
+3,solve,LOCALLY_SOLVED,,,true
+3,buses matched to OpenDSS,248/248,,,true
+3,source P (kW),57.30218514772745,57.304,0.1,true
+3,source Q (kvar),18.84265051339145,18.842,0.1,true
+3,V_pn max (V),245.06978595275322,245.07,0.1,true
+3,V_pn min (V),238.8535293160081,238.853,0.1,true
+3,max NEV (V),2.2104884117896106,2.211,0.05,true
+3,max VUF (%),0.3178013415223736,0.318,0.01,true
+3,max |ΔV_pn| any bus (V)  [b1321 ph3],0.0005505453769671931,0.0,0.1,true
+3,max |ΔNEV| any bus (V),0.00031158821038923534,0.0,0.05,true
+4,solve,LOCALLY_SOLVED,,,true
+4,buses matched to OpenDSS,248/248,,,true
+4,source P (kW),-300.3991253423349,-300.411,0.1,true
+4,source Q (kvar),21.439505868899715,21.398,0.1,true
+4,V_pn max (V),252.96570864818952,252.966,0.1,true
+4,V_pn min (V),243.29871106264108,243.299,0.1,true
+4,max NEV (V),3.1214125711259797,3.122,0.05,true
+4,max VUF (%),0.5818686667522878,0.582,0.01,true
+4,max |ΔV_pn| any bus (V)  [b2848 ph1],0.0004913518104672221,0.0,0.1,true
+4,max |ΔNEV| any bus (V),0.00018742887402023456,0.0,0.05,true
+5,HC0 voltage-only (kVA/customer),3.0234375,3.025,0.02,true
+6,droop error at HC1 (fraction of S),6.126531982724514e-8,0.0,0.005,true

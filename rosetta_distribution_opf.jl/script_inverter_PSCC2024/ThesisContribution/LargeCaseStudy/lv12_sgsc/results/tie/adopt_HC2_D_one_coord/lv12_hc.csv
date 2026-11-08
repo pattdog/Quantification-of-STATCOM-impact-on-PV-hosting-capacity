@@ -1,0 +1,3 @@
+stage,pv_mode,statcom,code,hc_kva_per_customer,capped,active,first_fail,solves,dhc_vs_hc1
+5,unity,none,A,3.0234375,false,vmax,vmax b2848 ph1,12,
+6,vvw,none,A,4.083984375,false,vmax+therm,vmax b3278 ph1,12,

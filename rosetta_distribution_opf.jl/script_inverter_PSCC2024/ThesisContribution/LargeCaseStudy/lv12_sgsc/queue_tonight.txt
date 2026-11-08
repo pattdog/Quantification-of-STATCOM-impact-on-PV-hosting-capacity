@@ -1,0 +1,20 @@
+# --- S1: circuit-A siting ---
+HC2_D_pair733_coord
+HC2_D_pair733_vbal
+HC2_D_oneA733_coord
+HC2_D_oneA733_vbal
+# --- S2: feeder-cable limits off, transformer kept at 500 kVA ---
+HC1 LV12_THERMAL_A=1e6
+HC2_D_one_coord LV12_THERMAL_A=1e6
+HC2_C_one_coord LV12_THERMAL_A=1e6
+HC2_D_one_vbal LV12_THERMAL_A=1e6
+HC2_D_pair_coord LV12_THERMAL_A=1e6
+# --- Block 2: headline set at 10 x 10 ---
+HC1 LV12_NINIT=10 LV12_NNEW=10
+HC2_D_one_coord LV12_NINIT=10 LV12_NNEW=10
+HC2_D_one_vbal LV12_NINIT=10 LV12_NNEW=10
+HC2_D_pair_coord LV12_NINIT=10 LV12_NNEW=10
+HC2_D_pair_vbal LV12_NINIT=10 LV12_NNEW=10
+HC2_C_one_coord LV12_NINIT=10 LV12_NNEW=10
+HC2_C_one_vbal LV12_NINIT=10 LV12_NNEW=10
+HC2_B_one_coord LV12_NINIT=10 LV12_NNEW=10
