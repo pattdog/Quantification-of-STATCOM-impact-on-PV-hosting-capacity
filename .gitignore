@@ -4,3 +4,4 @@ manifest.toml
 *.log
 .ipynb_checkpoints/
 *.zip
+.vscode/
