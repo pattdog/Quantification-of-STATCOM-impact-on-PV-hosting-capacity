@@ -76,7 +76,7 @@ ipopt_solver = JuMP.optimizer_with_attributes(
     "nlp_scaling_method" => "none", 
 )
 =#
-data_path = "./rosetta_distribution_opf.jl/data/ENWL_4w_Network1_Feeder1/Master.dss"
+data_path = "./data/ENWL_4w_Network1_Feeder1/Master.dss"
 
 # -----------------------------------------------------------------------
 # kW/kVAr <-> pu conversions

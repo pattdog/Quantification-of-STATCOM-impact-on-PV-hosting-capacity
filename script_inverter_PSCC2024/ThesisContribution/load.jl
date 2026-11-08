@@ -34,7 +34,7 @@ import PowerModelsDistribution
 const PMD = PowerModelsDistribution
 PMD.silence!()
 
-data_path = "./rosetta_distribution_opf.jl/data/ENWL_4w_Network1_Feeder1/Master.dss"
+data_path = "./data/ENWL_4w_Network1_Feeder1/Master.dss"
 
 data_eng  = PMD.parse_file(data_path, transformations=[PMD.transform_loops!])
 data_math = PMD.transform_data_model(

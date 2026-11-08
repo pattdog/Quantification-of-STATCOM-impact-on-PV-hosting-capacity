@@ -1,9 +1,56 @@
 #=
 # ==============================================================================
-# SCRIPT: STATCOM & PV Hosting Capacity Assessment — Phase-Realistic PV
+# SCRIPT: STATCOM & PV Hosting Capacity Assessment — VVC-Enabled PV
 # PROJECT: Undergraduate Thesis - Power Systems Engineering
 # AUTHOR: Pat
 # DATE: Aug 2026
+# ==============================================================================
+#
+# THIS VERSION ON TOP OF single_phase_pv.jl:
+#
+#  1. GENERATOR BOUNDS FIXED (PV only): the independent pmax/qmax box has
+#     been replaced with the standard joint apparent-power capability curve,
+#     P^2 + Q^2 <= S_rating^2, matching Eq. (1p) in Quiertant et al. 2023 and
+#     the same constraint idiom already used for branch thermal limits in
+#     constraints.jl. The old box bounds were tight in one direction (the
+#     P=full-output corner sat exactly on the true S-circle) but understated
+#     the inverter's real capability everywhere else, and — more importantly
+#     — P and Q were governed by two independent constraints, so absorbing Q
+#     never actually cost the inverter any P headroom. The new joint
+#     constraint makes that trade-off real. add_pv! now stores a single
+#     s_rating_pu per unit (apparent power) instead of deriving a tight
+#     q_lim; pmax/qmax become a loose outer box (never binding) and the real
+#     shaping happens via a NEW CONSTRAINT that must be added to
+#     constraints.jl (see the accompanying patch file / notes below — this
+#     part cannot be added from the top-level script, since it lives inside
+#     the generator loop in your rosetta_distribution_opf.jl package).
+#
+#  2. VOLT-VAR DROOP (PV only, STATCOM untouched): each single-phase PV
+#     unit's Q is no longer a free OPF decision variable — it's pinned by a
+#     per-phase, local, autonomous Volt-Var droop law following the generic
+#     VVC curve in Fig. 1 of Quiertant et al. 2023 / Eq. (4) of the Mhanna
+#     et al. VVWO paper, using AS/NZS 4777.2-style breakpoints:
+#         V1=207V  V2=220V  V3=240V  V4=253V
+#     reacting only to that PV unit's OWN phase-to-neutral voltage
+#     magnitude — no visibility into any other bus or unit. This again
+#     requires a new constraint block in constraints.jl (registered as a
+#     JuMP user-defined function so Ipopt can autodiff through the
+#     piecewise droop curve — the "nonsmooth" approach from both papers).
+#
+#  3. STATCOM IS DELIBERATELY UNCHANGED in this script, per discussion with
+#     supervisor: STATCOM Q stays a free, centrally-optimized OPF variable
+#     for now (Option A). The STATCOM-side realism question (sequence-
+#     voltage-minimizing objective, per supervisor guidance) is separate
+#     follow-up work, not part of this script.
+#
+#  4. gen["vvc"] = true/false toggles the droop per PV unit, so you can run
+#     UPF (Q=0 baseline), free-Q (old OPF-coordinated ceiling), and droop
+#     (realistic autonomous VVC) side by side — see Case 2 below.
+#
+# IMPORTANT: item 1 and item 2 both require a corresponding block inside
+# constraints.jl's generator loop. This script alone is NOT sufficient —
+# see the accompanying constraints_patch_vvc.jl file for the exact code to
+# insert into your rosetta_distribution_opf.jl package, and where.
 # ==============================================================================
 #
 # DESCRIPTION:
@@ -16,6 +63,12 @@
 #     other two conductors. add_pv! now reads data_math["load"][id]["connections"]
 #     for the colocated load and copies those connections onto the PV gen, so a
 #     load on phase B gets a phase-B-only PV unit, not a balanced 3-phase one.
+#
+#  [CORRECTED] pmax stays at the TRUE real-power nameplate (pv_pu) as a hard
+#  cap — only qmax/qmin are loosened to +/-s_rating. An earlier version of
+#  this function loosened pmax itself, which let P reach s_rating (25% above
+#  nameplate at Q=0) in every case — caught via a flat 125% utilisation
+#  figure across every run regardless of voltage bounds.
 #
 #  2. STATCOM STAYS 3-PHASE (unchanged in principle from before), but is now
 #     sized directly in kVAr instead of a q_scale×qd multiplier, and that
@@ -52,6 +105,16 @@
 # ==============================================================================
 =#
 
+using Logging
+Logging.disable_logging(Logging.Warn)
+# ^ Suppresses ALL @warn-level output for the rest of this session — soft-
+# scope ambiguity warnings, JuMP.Containers "single-element axis" notices,
+# anything else at Warn level or below. This is blunt (it would also hide
+# any genuinely new warning), but the alternative is chasing each one down
+# individually as they surface, which isn't a good use of time while we're
+# trying to just see solved results. Comment this out later if you want
+# warnings back for a specific debugging session.
+
 using Pkg
 Pkg.activate("./")
 using rosetta_distribution_opf
@@ -67,28 +130,41 @@ const PMD  = PowerModelsDistribution
 const RPMD = rosetta_distribution_opf
 const IM   = InfrastructureModels
 PMD.silence!()
-
+#=
+ipopt_solver = JuMP.optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 5,
+    "max_iter" => 10000)
+    =#
 ipopt_solver = JuMP.optimizer_with_attributes(
     Ipopt.Optimizer,
-    "print_level"           => 0,
-    "sb"                    => "yes",
-    "warm_start_init_point" => "yes",
-    "max_iter"              => 50000
+    "print_level" => 0,
+    "sb"          => "yes",
+    "max_iter"    => 1500,
+    "warm_start_init_point" => "yes", # claude says keep no
+    "tol" => 1e-3, #3,                   # Relax the main tolerance (1e-4 -> 1e-3)
+    "acceptable_tol" => 1e-1, #1,        # Be very forgiving if it gets close
+    "constr_viol_tol" => 1e-3,       # Allow tiny overlaps in constraints
+    
+    # Advanced Scaling - Helps with 4-wire numerical issues
+    "nlp_scaling_method" => "none", 
 )
 
-data_path = "./rosetta_distribution_opf.jl/data/ENWL_4w_Network1_Feeder1/Master.dss"
 
-# ═══════════════════════════════════════════════════════════════
-# NETWORK LOADER  — unchanged from seminarScript.jl
-# ═══════════════════════════════════════════════════════════════
+data_path = "./data/ENWL_4w_Network1_Feeder1/Master.dss"
+
+# ═══════════════════
+# NETWORK LOADER  
+# ═══════════════════
 function load_base_network(data_path;
         load_multiplier = 1.0,
         enforce_bounds  = false)
 
     data_eng  = PMD.parse_file(data_path, transformations=[PMD.transform_loops!])
     data_math = PMD.transform_data_model(
-        data_eng, multinetwork=false, kron_reduce=false, phase_project=false
+        data_eng, multinetwork=false, kron_reduce=false, phase_project=false,
+        make_pu=false   # skip PMD's own pu conversion
     )
+    PMD.make_per_unit!(data_math; sbase=10.0)   # 10 kVA
+    PMD.add_start_vrvi!(data_math)
 
     for (i, bus) in data_math["bus"]
         if bus["bus_type"] == 3
@@ -186,24 +262,49 @@ kw_to_pu(p_kw, sbase_kva)   = p_kw / sbase_kva
 kvar_to_pu(q_kvar, sbase_kva) = q_kvar / sbase_kva
 
 # ═══════════════════════════════════════════════════════════════
-# PV PLACEMENT — REWRITTEN
-#   • Sized directly in kW (real units), not pv_scale×pd.
-#   • Single-phase: connections copied from the colocated load, so
-#     a load on phase B gets a phase-B-only PV unit.
-#   • Inverter Q headroom still expressed as q_scale over the kW
-#     rating (s_max = q_scale × pv_kw), consistent with smart-
-#     inverter sizing convention (e.g. a 5kW/6.25kVA inverter).
+# PV PLACEMENT — REWRITTEN AGAIN: S_rating-based, VVC-ready
+#
+#   BOUNDS FIX: gen["pmax"]/gen["qmax"] are now a LOOSE outer box
+#   (±s_rating on each axis) that should never itself bind. The
+#   real shaping comes from the joint capability constraint
+#       pg[p,id]^2 + qg[p,id]^2 <= s_rating^2
+#   which must be added in constraints.jl (see constraints_patch_vvc.jl).
+#   This script only stores the s_rating value each unit needs;
+#   it cannot add a JuMP constraint from outside the model-builder.
+#
+#   VVC: each unit optionally carries a droop toggle (gen["vvc"])
+#   and breakpoints (gen["vvc_v1..v4"], in PER-UNIT voltage relative
+#   to this network's own 0.2309 kV phase-to-neutral base) plus a max
+#   |Q| fraction of s_rating (gen["vvc_qbar"]). When vvc=false, Q is
+#   left as a free OPF variable (bounded only by the loose box above)
+#   — i.e. the old Option-A "smart inverter ceiling" behavior.
+#   When vvc=true, constraints.jl's new block pins Q to the droop law
+#   instead — realistic, local, autonomous AS/NZS 4777.2-style control.
 # ═══════════════════════════════════════════════════════════════
 function add_pv!(data_math;
-        pv_kw     = 5.0,      # real active rating per installed unit, kW
-        q_scale   = 1.25,     # inverter kVA headroom multiplier (s_max = q_scale*pv_kw)
-        spacing   = 1,
-        pv_cost   = -1000.0,
-        sbase_kva = SBASE_KVA)
+        pv_kw      = 5.0,       # real active rating per installed unit, kW
+        s_scale    = 1.25,      # apparent-power headroom multiplier: s_rating = s_scale*pv_kw
+        spacing    = 1,
+        pv_cost    = -1000.0,
+        enable_vvc = true,      # true: local Volt-Var droop (needs constraints.jl patch)
+                                 # false: Q free in OPF (old Option-A ceiling)
+        vvc_v1_v   = 207.0,     # VVC breakpoints, REAL VOLTS, phase-to-neutral
+        vvc_v2_v   = 220.0,
+        vvc_v3_v   = 240.0,
+        vvc_v4_v   = 253.0,
+        vvc_qbar   = 0.44,      # max |Q| as a fraction of s_rating at V<=V1 / V>=V4
+        vnom_kv    = 0.2309,    # network's nominal phase-to-neutral base, from Loads_v2.txt
+        sbase_kva  = SBASE_KVA)
 
     pv_pu = kw_to_pu(pv_kw, sbase_kva)
-    s_pu  = q_scale * pv_pu
-    q_lim = sqrt(max(0.0, s_pu^2 - pv_pu^2))
+    s_pu  = s_scale * pv_pu   # apparent power rating, per-unit — this IS s_rating
+
+    # VVC breakpoints: real volts -> per-unit, relative to this network's own base
+    vnom_v = vnom_kv * 1000
+    v1_pu  = vvc_v1_v / vnom_v
+    v2_pu  = vvc_v2_v / vnom_v
+    v3_pu  = vvc_v3_v / vnom_v
+    v4_pu  = vvc_v4_v / vnom_v
 
     source_buses = Set([i for (i, bus) in data_math["bus"] if bus["bus_type"] == 3])
     load_ids = sort(
@@ -237,24 +338,42 @@ function add_pv!(data_math;
         gen["gen_bus"]     = load["load_bus"]
         gen["type"]        = "PV"
         gen["name"]        = "pv_load_$(load_ids[i])"
-        gen["connections"] = deepcopy(conns)       # KEY CHANGE: match the load's phase(s)
+        gen["connections"] = deepcopy(conns)       # matches the load's phase(s)
 
+        # BOUNDS FIX: pmax stays at the TRUE real-power nameplate (pv_pu) —
+        # a 5kW inverter cannot legitimately output more than 5kW of real
+        # power just because it has apparent-power headroom for Q. Only
+        # qmax/qmin get loosened to +/-s_pu; the joint S^2 constraint added
+        # in constraints.jl then curtails P below pv_pu ONLY once |Q| grows
+        # large enough that the S-circle, not this P cap, becomes binding.
+        # (Loosening pmax itself was a bug in the previous version of this
+        # function — it let P reach s_pu = s_scale*pv_pu at Q=0, i.e. up to
+        # 25% more real power than the stated nameplate, in every case.)
         gen["pmax"] =  pv_pu * ones(n_ph)
         gen["pmin"] =  zeros(n_ph)
-        gen["qmax"] =  q_lim * ones(n_ph)
-        gen["qmin"] = -q_lim * ones(n_ph)
+        gen["qmax"] =  s_pu * ones(n_ph)
+        gen["qmin"] = -s_pu * ones(n_ph)
         gen["cost"] = [pv_cost 0.0]
+
+        # New: apparent-power rating for the joint capability constraint,
+        # AND the true active-power nameplate rating for reporting — pmax
+        # is now a loose s_pu ceiling, so it can no longer double as "the
+        # kW capacity" the way it did in the old box-bound version.
+        gen["s_rating"] = s_pu
+        gen["p_rating"] = pv_pu
+
+        # New: VVC droop configuration (used by constraints.jl only if
+        # enable_vvc=true; harmless to carry even when false).
+        gen["vvc"]      = enable_vvc
+        gen["vvc_v1"]   = v1_pu
+        gen["vvc_v2"]   = v2_pu
+        gen["vvc_v3"]   = v3_pu
+        gen["vvc_v4"]   = v4_pu
+        gen["vvc_qbar"] = vvc_qbar
 
         # Defensive: trim any other length-3 template field (e.g. vg/pg/qg
         # starting points) down to n_ph so the gen record stays internally
         # consistent. PMD versions vary in which fields exist here.
-        #=
-        for (k, v) in gen
-            if v isa Vector{<:Real} && length(v) == 3 && n_ph != 3
-                gen[k] = v[1:n_ph]
-            end
-        end
-        =#
         for (k, v) in gen
             if v isa Vector{<:Real} && length(v) == 3 && n_ph != 3
                 gen[k] = v[phase_conns]
@@ -265,8 +384,9 @@ function add_pv!(data_math;
         n_ph == 1 ? (n_ph1 += 1) : (n_ph3 += 1)
     end
 
-    println("  PV: $(length(pv_ids)) units  pv_kw=$(pv_kw) kW/unit  q_scale=$(q_scale)  spacing=$(spacing)  cost=$(pv_cost)")
-    println("      single-phase: $n_ph1   three-phase: $n_ph3   skipped (no phase match): $n_skip")
+    vvc_str = enable_vvc ? "VVC droop ON (V1-V4=$(vvc_v1_v)/$(vvc_v2_v)/$(vvc_v3_v)/$(vvc_v4_v) V, qbar=$(vvc_qbar))" : "VVC OFF (Q free in OPF)"
+    println("  PV: $(length(pv_ids)) units  pv_kw=$(pv_kw) kW/unit  s_scale=$(s_scale)  spacing=$(spacing)  cost=$(pv_cost)")
+    println("      single-phase: $n_ph1   three-phase: $n_ph3   skipped (no phase match): $n_skip   $(vvc_str)")
     return pv_ids
 end
 
@@ -352,12 +472,64 @@ end
 #   • STATCOM utilisation reported as both NET and GROSS (see
 #     header note for why these can diverge).
 # ═══════════════════════════════════════════════════════════════
-function solve_and_report(data_math, label; sbase_kva=SBASE_KVA, vbase_kv=VBASE_KV)
-    PMD.add_start_vrvi!(data_math)
+function solve_and_report(data_math, label; objective_choice="cost", sbase_kva=SBASE_KVA, vbase_kv=VBASE_KV)
+    # ══════════════════════════════════════════════════════════════
+    # REWRITTEN: this now matches the REAL working pattern (confirmed
+    # against a known-good script) — ref/model built manually, custom
+    # physics pulled in via include(), NOT PMD.instantiate_mc_model.
+    # That earlier path never touched core/constraints.jl at all, which
+    # is why the VVC droop code silently had zero effect for this whole
+    # debugging thread — it was never in the call graph.
+    # ══════════════════════════════════════════════════════════════
+    # include() always runs in GLOBAL scope, never the calling function's
+    # local scope — variables.jl's very first line references `ref`, so it
+    # must already be a global by the time include() runs, not just a
+    # local inside this function. Same for `model`.
+    global objective = objective_choice   # renamed the keyword arg specifically
+                                    # to avoid this: `global objective = objective`
+                                    # (same name on both sides) is a real Julia
+                                    # scoping trap — once `global objective`
+                                    # appears anywhere in a function, EVERY bare
+                                    # occurrence of that name in the function is
+                                    # treated as the global, including the RHS
+                                    # of that same line. That made the RHS read
+                                    # the (unassigned) global instead of the
+                                    # keyword argument — exactly the error seen.
+    global ref = IM.build_ref(data_math, PMD.ref_add_core!, PMD._pmd_global_keys, PMD.pmd_it_name)[:it][:pmd][:nw][0]
+    global model = JuMP.Model(ipopt_solver)
+    include("./core/variables.jl")
+        # === ADD: start values for STATCOM crg/cig, if any are present ===
+    # NOTE: not exact zero -- a small genuine positive-sequence current
+    # pattern instead. crg_012/cig_012 (IUF/IUF2's sequence-current
+    # expressions) are DERIVED from crg/cig, with no start of their own.
+    # An exact-zero crg/cig start makes IUF's denominator
+    # (crg_012[2]^2+cig_012[2]^2) evaluate to exactly 0/0 = NaN at the very
+    # first model evaluation -- before Ipopt even takes a step -- which is
+    # what produces INVALID_MODEL rather than a normal solve/infeasible
+    # result. A small balanced positive-sequence triplet keeps crg=cig=0
+    # harmless for "cost"/IUF2 (which don't depend on this) while giving
+    # IUF's denominator a safely nonzero starting value.
+    if @isdefined(STATCOM_GEN_IDS)
+        small_cr = [0.001, -0.0005, -0.0005]
+        small_ci = [0.0, -0.0008660254, 0.0008660254]
+        for gid in STATCOM_GEN_IDS
+            for p in 1:3
+                JuMP.set_start_value(crg[p,gid], small_cr[p])
+                JuMP.set_start_value(cig[p,gid], small_ci[p])
+            end
+        end
+    end
+    # === END ADD ===
+    #include("./core/constraints_VVC.jl")
+    include("./core/constraints_unified.jl")
+    println("    [objective = \"$objective\"]")
+    include("./core/objectives_FIXED.jl")
 
-    model  = PMD.instantiate_mc_model(data_math, PMD.IVRENPowerModel, PMD.build_mc_opf)
-    result = PMD.optimize_model!(model, optimizer=ipopt_solver)
-    status = result["termination_status"]
+    println("    solving...")
+    t0 = time()
+    JuMP.optimize!(model)
+    println("    solve took $(round(time()-t0, digits=1))s")
+    status = JuMP.termination_status(model)
     println("\n  [$label]  →  $(status)")
 
     v_min = NaN;  v_mean = NaN;  v_max = NaN
@@ -368,26 +540,35 @@ function solve_and_report(data_math, label; sbase_kva=SBASE_KVA, vbase_kv=VBASE_
     st_util_net = NaN; st_util_gross = NaN
     vm_per_bus = Dict{String, Float64}()
 
-    if string(status) in ["LOCALLY_SOLVED", "OPTIMAL"]
-        sol = result["solution"]
+    if status in [JuMP.LOCALLY_SOLVED, JuMP.ALMOST_LOCALLY_SOLVED, JuMP.OPTIMAL]
 
         # ── Voltage profile ─────────────────────────────────────
+        # NOTE: ref[:bus] keys are Int (IM.build_ref convention), not the
+        # String keys data_math uses. bus["bus_type"] is read straight off
+        # ref[:bus][b] — IM's ref-building generally carries this field
+        # through from data_math unchanged; flag if this errors, as it
+        # would mean bus_type isn't propagated and needs pulling from
+        # data_math["bus"][string(b)] instead.
         vm_all     = Float64[]
         bus_labels = String[]
-
-        for (b, bus) in data_math["bus"]
-            bus["bus_type"] == 3   && continue
-            !haskey(sol["bus"], b) && continue
+        #=println("DEBUG total bus keys: ", length(keys(ref[:bus])))
+        println("DEBUG bus keys sample: ", sort(collect(keys(ref[:bus])))[1:5])
+        println("DEBUG vr axis2 length: ", length(vr.axes[2]))
+        println("DEBUG vr axis2 sample: ", sort(collect(vr.axes[2]))[1:5])
+        println("DEBUG 2 in ref[:bus] keys: ", 2 in keys(ref[:bus]))
+        println("DEBUG 2 in vr.axes[2]: ", 2 in vr.axes[2])=#
+        for (b, bus) in ref[:bus]
+            bus["bus_type"] == 3 && continue
             bus_max = 0.0
             for p in 1:3
-                vr = get(sol["bus"][b], "vr", zeros(4))[p]
-                vi = get(sol["bus"][b], "vi", zeros(4))[p]
-                vm = abs(vr + im * vi)
-                push!(vm_all,     vm)
-                push!(bus_labels, b)
-                bus_max = max(bus_max, vm)
+                vr_val = JuMP.value(vr[p, b])
+                vi_val = JuMP.value(vi[p, b])
+                vm_val = abs(vr_val + im * vi_val)
+                push!(vm_all,     vm_val)
+                push!(bus_labels, string(b))
+                bus_max = max(bus_max, vm_val)
             end
-            vm_per_bus[b] = bus_max
+            vm_per_bus[string(b)] = bus_max
         end
 
         if !isempty(vm_all)
@@ -428,16 +609,25 @@ function solve_and_report(data_math, label; sbase_kva=SBASE_KVA, vbase_kv=VBASE_
         end
 
         # ── PV dispatch ─────────────────────────────────────────
-        # NOTE: pv gens are now variable-length (1 for single-phase, 3 for
-        # three-phase), so fallback zero-vectors must match each gen's own
-        # pmax length rather than assuming 3.
-        pv_gens = [(i, g) for (i, g) in data_math["gen"] if get(g, "type", "") == "PV"]
-        if !isempty(pv_gens) && haskey(sol, "gen")
-            pg_vals = [
-                sum(get(sol["gen"][i], "pg", zeros(length(g["pmax"]))))
-                for (i, g) in pv_gens if haskey(sol["gen"], i)
-            ]
-            pg_rated    = [sum(g["pmax"]) for (i, g) in pv_gens]
+        # Metadata (type, p_rating, s_rating, vvc flags) is pulled from
+        # data_math["gen"] (String keys, definitely carries our custom
+        # fields since add_pv! set them there directly) rather than
+        # ref[:gen], since it's unverified whether IM.build_ref preserves
+        # arbitrary custom keys through to ref. Solved VALUES (pg/qg) come
+        # from the JuMP variable containers via ref's Int keys, since
+        # that's what pg/qg are actually indexed by.
+        pv_gen_ids = [parse(Int, i) for (i, g) in data_math["gen"] if get(g, "type", "") == "PV"]
+        if !isempty(pv_gen_ids)
+            pg_vals = Float64[]
+            pg_rated = Float64[]
+            for gid in pv_gen_ids
+                g = data_math["gen"][string(gid)]
+                # pg is zero-filled (not a real variable) on unused phase
+                # slots per variables.jl's construction, so summing 1:3
+                # unconditionally is safe regardless of this unit's n_ph.
+                push!(pg_vals, sum(JuMP.value(pg[p, gid]) for p in 1:3))
+                push!(pg_rated, get(g, "p_rating", sum(g["pmax"])))
+            end
             pv_output   = sum(pg_vals)
             pv_capacity = sum(pg_rated)
             pv_util     = pv_output / max(1e-9, pv_capacity) * 100
@@ -451,13 +641,18 @@ function solve_and_report(data_math, label; sbase_kva=SBASE_KVA, vbase_kv=VBASE_
         end
 
         # ── STATCOM dispatch ────────────────────────────────────
-        st_gens = [(i, g) for (i, g) in data_math["gen"] if get(g, "type", "") == "STATCOM"]
-        if !isempty(st_gens) && haskey(sol, "gen")
-            qg_vecs = [get(sol["gen"][i], "qg", zeros(3)) for (i, g) in st_gens if haskey(sol["gen"], i)]
+        st_gen_ids = [parse(Int, i) for (i, g) in data_math["gen"] if get(g, "type", "") == "STATCOM"]
+        if !isempty(st_gen_ids)
+            qg_vecs = Vector{Float64}[]
+            qg_rated = Float64[]
+            for gid in st_gen_ids
+                g = data_math["gen"][string(gid)]
+                push!(qg_vecs, [JuMP.value(qg[p, gid]) for p in 1:3])
+                push!(qg_rated, sum(g["qmax"]))
+            end
 
             qg_signed_sum = sum(sum(q) for q in qg_vecs)          # NET: signs can cancel
             qg_abs_sum    = sum(sum(abs.(q)) for q in qg_vecs)    # GROSS: no cancellation
-            qg_rated      = [sum(g["qmax"]) for (i, g) in st_gens]
 
             st_q_total    = qg_signed_sum
             st_q_cap      = sum(qg_rated)
@@ -490,7 +685,6 @@ function solve_and_report(data_math, label; sbase_kva=SBASE_KVA, vbase_kv=VBASE_
 
     else
         println("    WARNING: $(status)")
-        println("    Objective : $(get(result, "objective", "N/A"))")
     end
 
     return (
@@ -583,10 +777,20 @@ end
 
 # ── Plot 2: STATCOM rating sweep ─────────────────────────────────────────────
 function plot_rating_sweep(rating_results; savepath="./plots/rating_sweep.pdf")
+    valid_results = filter(r -> isfinite(r.util), rating_results)
+    if length(valid_results) < length(rating_results)
+        n_failed = length(rating_results) - length(valid_results)
+        println("  WARNING: $n_failed rating(s) failed to solve — excluded from plot")
+    end
 
-    ratings  = Float64[d.rating_kvar for d in rating_results]
-    utils    = Float64[d.util        for d in rating_results]
-    baseline = rating_results[1].baseline
+    if isempty(valid_results)
+        println("  WARNING: no valid ratings to plot — skipping rating_sweep plot entirely")
+        return nothing
+    end
+
+    ratings  = Float64[d.rating_kvar for d in valid_results]
+    utils    = Float64[d.util        for d in valid_results]
+    baseline = valid_results[1].baseline
 
     fig = Figure(size=(820, 500), backgroundcolor=:white)
     ax  = Axis(fig[1,1],
@@ -629,23 +833,36 @@ end
 # ═══════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════
+# DEV_MODE = true: fast sanity-check run — fewer units (wider spacing),
+# one PV kW level, Case 3 skipped entirely. Should finish in well under a
+# minute. Flip to false once you've confirmed everything looks sane, for
+# the real full sweep (52 units, all kW levels, full STATCOM rating sweep).
+DEV_MODE = false
+DEV_SPACING   = DEV_MODE ? 10 : 1
+DEV_KW_LEVELS = DEV_MODE ? [5.0] : [1.0, 3.0, 5.0, 7.0, 10.0]
+
 do_case1 = true
 do_case2 = true
-do_case3 = true
+do_case3 = !DEV_MODE
 
-const PV_COST      = -1000.0
-const STATCOM_COST =  1.0
+# NOTE: not `const` — these get re-run in the same Julia session often while
+# iterating, and `const` reassignment (even to an equal value) triggers a
+# noisy redefinition warning for array-valued constants specifically (Julia
+# allows silent redefinition of scalar consts to equal values, but not
+# arrays, since each literal is a fresh, distinct object).
+PV_COST      = -1000.0
+STATCOM_COST =  1.0
 
 # Case 2: sweep of realistic single-phase inverter sizes (kW)
-const PV_KW_LEVELS = [1.0, 3.0, 5.0, 7.0, 10.0]
+PV_KW_LEVELS = [1.0, 3.0, 5.0, 7.0, 10.0]
 
 # Case 3: fixed PV size for hosting-capacity stress test, chosen to sit
 # inside typical UK single-phase residential inverter range (≤5kW is most
 # common; higher values push into stress-test territory deliberately)
-const CASE3_PV_KW = 5.0
+CASE3_PV_KW = 8
 
 # Case 3: STATCOM rating sweep, kVAr TOTAL nameplate per unit
-const STATCOM_RATINGS_KVAR = [1.0, 5.0, 10.0, 20.0, 30.0, 50.0, 70.0, 100.0, 200.0]
+STATCOM_RATINGS_KVAR = [1.0, 5.0, 10.0, 20.0, 30.0, 50.0, 70.0, 100.0, 200.0]
 
 data_eng_ref = PMD.parse_file(data_path, transformations=[PMD.transform_loops!])
 dm_ref = load_base_network(data_path)
@@ -667,20 +884,47 @@ if do_case1
 end
 
 # ───────────────────────────────────────────────────────────────
-## Case 2: PV penetration sweep — now over real kW ratings, single-phase,
-##         phase-matched to the colocated load.
+## Case 2: PV penetration sweep — three-way comparison at each kW level:
+##   (a) UPF        — Q forced to 0 (no VVC, no free dispatch)
+##   (b) free-Q      — Q a free OPF variable (old Option-A "ceiling")
+##   (c) VVC droop   — Q pinned by local per-phase Volt-Var droop (realistic)
+##   NOTE: (b) and (c) both require the constraints.jl patch (S^2 capability
+##   constraint) to behave correctly; (c) additionally requires the VVC
+##   droop block. Without the patch, (b)/(c) will run using only the loose
+##   box bounds and will NOT show the intended P/Q competition or droop
+##   behavior — see constraints_patch_vvc.jl.
 # ───────────────────────────────────────────────────────────────
 if do_case2
     println("\n" * "="^55)
     println(" CASE 2: PV Penetration Sweep (no bounds)")
     println(" Single-phase PV, phase-matched to colocated load")
+    println(" UPF vs free-Q (Option A ceiling) vs VVC droop (realistic)")
     println("="^55)
 
-    for pv_kw in PV_KW_LEVELS
+    for pv_kw in DEV_KW_LEVELS
         println("\n  ── pv_kw = $(pv_kw) kW/unit ──")
-        dm = load_base_network(data_path, enforce_bounds=false)
-        add_pv!(dm; pv_kw=pv_kw, q_scale=1.25, spacing=1, pv_cost=PV_COST)
-        solve_and_report(dm, "PV $(pv_kw) kW/unit  [no bounds]")
+
+        println("    (a) UPF — Q forced to 0")
+        dm_upf = load_base_network(data_path, enforce_bounds=false)
+        pv_ids_upf = add_pv!(dm_upf; pv_kw=pv_kw, s_scale=1.25, spacing=DEV_SPACING,
+                              pv_cost=PV_COST, enable_vvc=false)
+        for id in pv_ids_upf
+            dm_upf["gen"][id]["qmax"] = zeros(length(dm_upf["gen"][id]["qmax"]))
+            dm_upf["gen"][id]["qmin"] = zeros(length(dm_upf["gen"][id]["qmin"]))
+        end
+        solve_and_report(dm_upf, "PV $(pv_kw) kW/unit  UPF [Q=0]")
+
+        println("    (b) free-Q — Option A ceiling (centrally-optimized Q)")
+        dm_free = load_base_network(data_path, enforce_bounds=false)
+        add_pv!(dm_free; pv_kw=pv_kw, s_scale=1.25, spacing=DEV_SPACING,
+                pv_cost=PV_COST, enable_vvc=false)
+        solve_and_report(dm_free, "PV $(pv_kw) kW/unit  free-Q [Option A]")
+
+        println("    (c) VVC droop — local, autonomous, per-phase")
+        dm_vvc = load_base_network(data_path, enforce_bounds=false)
+        add_pv!(dm_vvc; pv_kw=pv_kw, s_scale=1.25, spacing=DEV_SPACING,
+                pv_cost=PV_COST, enable_vvc=true)
+        solve_and_report(dm_vvc, "PV $(pv_kw) kW/unit  VVC droop")
     end
 end
 
@@ -693,46 +937,40 @@ if do_case3
     println(" CASE 3: STATCOM Hosting Capacity Study")
     println(" PV: $(CASE3_PV_KW) kW/unit, single-phase, phase-matched  |  bounds: 0.90–1.10 pu")
     println(" PV cost: $(PV_COST)  |  STATCOM cost: $(STATCOM_COST)")
-    println(" Builder: PMD.build_mc_opf  |  Objective: cost (gen[\"cost\"])")
+    println(" Builder: ref/JuMP.Model + core/{variables,constraints,objectives}.jl")
     println("="^55)
 
-    println("\n  ── 3a: PV only — hosting capacity baseline ──")
+    println("\n  ── 3a: PV only (VVC droop) — hosting capacity baseline ──")
     dm3a = load_base_network(data_path, enforce_bounds=true)
-    add_pv!(dm3a; pv_kw=CASE3_PV_KW, q_scale=1.25, spacing=1, pv_cost=PV_COST)
-    r3a  = solve_and_report(dm3a, "PV only  [no STATCOM]")
+    add_pv!(dm3a; pv_kw=CASE3_PV_KW, s_scale=1.25, spacing=1, pv_cost=PV_COST, enable_vvc=true)
+    r3a  = solve_and_report(dm3a, "PV only (VVC droop)  [no STATCOM]")
 
-    println("\n  ── 3b: STATCOM rating sweep (spacing=10) ──")
+    println("\n  ── 3b: STATCOM rating sweep (52 STATCOMs, spacing=1) ──")
     rating_results = NamedTuple[]
     r3b_last = nothing
     for rating in STATCOM_RATINGS_KVAR
+        println("\n  ── STATCOM rating = $(rating) kVAr/unit  (52 units) ──")
         local dm3b = load_base_network(data_path, enforce_bounds=true)
-        add_pv!(dm3b; pv_kw=CASE3_PV_KW, q_scale=1.25, spacing=1, pv_cost=PV_COST)
-        
-        # 1. Capture the returned array to count the units placed
-        statcom_ids = add_statcoms!(dm3b; rating_kvar=rating, spacing=10, statcom_cost=STATCOM_COST)
-        n_st = length(statcom_ids)
-        
-        println("\n  ── STATCOM rating = $(rating) kVAr/unit  ($(n_st) units) ──")
-        
-        # Update the report label so the console logs match the unit count
-        r = solve_and_report(dm3b, "PV+STATCOM $(rating) kVAr/unit  $(n_st) units")
-        
-        # 2. Add n_units to the NamedTuple that gets pushed to the results array
-        push!(rating_results, (rating_kvar=rating, util=r.pv_util, baseline=r3a.pv_util, n_units=n_st))
-        
+        add_pv!(dm3b;       pv_kw=CASE3_PV_KW, s_scale=1.25, spacing=1, pv_cost=PV_COST, enable_vvc=true)
+        add_statcoms!(dm3b; rating_kvar=rating, spacing=1,   statcom_cost=STATCOM_COST)
+        r = solve_and_report(dm3b, "PV+STATCOM $(rating) kVAr/unit  52 units")
+        push!(rating_results, (rating_kvar=rating, util=r.pv_util, baseline=r3a.pv_util))
+        # NOTE: this loop runs at top-level script scope, where Julia's soft-scope
+        # rules treat a bare `r3b_last = r` as creating a NEW local shadowing the
+        # outer variable (silently — you only see it as a one-line warning at
+        # runtime), leaving the outer r3b_last stuck at `nothing`. `global` forces
+        # it to update the actual outer variable instead.
         global r3b_last = r
     end
-    
     plot_rating_sweep(rating_results)
 
     if !isnothing(r3b_last)
         plot_voltage_profile(r3a, r3b_last, CASE3_PV_KW, STATCOM_RATINGS_KVAR[end])
     end
 
-    # 3. Call r.n_units dynamically in the table row creation
     table_rows = vcat(
         [(label="No STATCOM (baseline)", util=r3a.pv_util, curtail=r3a.pv_curtail)],
-        [(label="STATCOM $(Int(r.rating_kvar)) kVAr ($(r.n_units) units)", util=r.util, curtail=100.0 - r.util)
+        [(label="STATCOM $(Int(r.rating_kvar)) kVAr (52 units)", util=r.util, curtail=100.0 - r.util)
          for r in rating_results]
     )
     print_delta_hc_table(table_rows)

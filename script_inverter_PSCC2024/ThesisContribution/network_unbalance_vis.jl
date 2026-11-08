@@ -59,7 +59,7 @@ ipopt_solver = JuMP.optimizer_with_attributes(
     "warm_start_init_point" => "no",
 )
 
-data_path = "./rosetta_distribution_opf.jl/data/ENWL_4w_Network1_Feeder1/Master.dss"
+data_path = "./data/ENWL_4w_Network1_Feeder1/Master.dss"
 
 kw_to_pu(p_kw, sbase_kva)     = p_kw / sbase_kva
 kvar_to_pu(q_kvar, sbase_kva) = q_kvar / sbase_kva

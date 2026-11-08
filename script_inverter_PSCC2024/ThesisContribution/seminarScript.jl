@@ -65,7 +65,7 @@ ipopt_solver = JuMP.optimizer_with_attributes(
     "max_iter"              => 50000
 )
 
-data_path = "./rosetta_distribution_opf.jl/data/ENWL_4w_Network1_Feeder1/Master.dss"
+data_path = "./data/ENWL_4w_Network1_Feeder1/Master.dss"
 
 # ═══════════════════════════════════════════════════════════════
 # NETWORK LOADER  — unchanged

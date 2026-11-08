@@ -4,7 +4,7 @@ This repository holds the code and results behind my thesis. It computes the roo
 
 ## Where things are
 
-All the code written for the thesis is under `rosetta_distribution_opf.jl/script_inverter_PSCC2024/`. That folder sits inside the `rosetta_distribution_opf.jl` package because the scripts find the shared model files, the network data and the Julia project by searching upward from their own location, so the layout should not be changed. `core/` holds the network, inverter, STATCOM and limit model that every final script loads (`variables.jl`, `constraints_unified.jl` and `objectives_FIXED.jl`); the other files in `core/` are earlier versions kept for the record. `ThesisContribution/` holds the study scripts. The rest of `rosetta_distribution_opf.jl` is the package of that name by Rahmat Heidari, which every script loads with `using rosetta_distribution_opf`, and its `data/` folder holds the network files the scripts read.
+The thesis code is in `script_inverter_PSCC2024/`. Its `core/` folder holds the network, inverter, STATCOM and limit model that every final script loads (`variables.jl`, `constraints_unified.jl` and `objectives_FIXED.jl`); the other files in `core/` are earlier versions kept for the record. `ThesisContribution/` holds the study scripts. `data/` holds the network files the scripts read. `rosetta_distribution_opf.jl/` is the `rosetta_distribution_opf` package by Rahmat Heidari (its source and its `Project.toml`), which every script loads with `using rosetta_distribution_opf`. The scripts find `core/`, `data/` and the Julia project by searching upward from their own location, so keep these folders where they are relative to each other.
 
 The table maps each part of the thesis to the script that produces it. Script paths are relative to `ThesisContribution/`. Results paths are relative to the repository root, except for LV12_248, whose results sit next to its script. The plotting scripts read the CSV files and never solve.
 
@@ -35,7 +35,7 @@ Ipopt is installed by Ipopt.jl with its default linear solver. The Python helper
 Run every command from the repository root. Each script activates the project itself, so the `--project` flag is optional. The four-bus studies are deterministic: they use no random numbers, and all settings are constants at the top of each script.
 
 ```
-S=rosetta_distribution_opf.jl/script_inverter_PSCC2024/ThesisContribution
+S=script_inverter_PSCC2024/ThesisContribution
 julia --project=. $S/SmallNetworkTest/No_PV/Small_Network_Sweep2.jl
 julia --project=. $S/SmallNetworkTest/PV/SmallNetworkPV_RUNTIME_SHRINK.jl
 ```
@@ -53,4 +53,4 @@ The prepared LV12_248 inputs are committed, so `lv12_opf.jl` runs without rebuil
 
 ## Data and credits
 
-The `rosetta_distribution_opf` package (`rosetta_distribution_opf.jl/src/`) is by Rahmat Heidari and is included as it was imported. The models are built on PowerModelsDistribution and JuMP and solved with Ipopt. The LV12_248 network comes from the Geth et al. (2025) CSIRO dataset of Australian low-voltage feeders (doi:10.25919/ghnz-bk28). The household loads are the Smart Grid Smart City profiles in `smartgridsmartcities.json` from CSIRO's RepresentativeLVNetworks repository, which is not redistributed here. Cable ratings are from Energex STNW3369, Release 5 (12 June 2026). The four-bus network's parameters and their sources are documented in the header of `rosetta_distribution_opf.jl/data/4_Bus_Small.dss`.
+The `rosetta_distribution_opf` package (`rosetta_distribution_opf.jl/src/`) is by Rahmat Heidari and is included as it was imported. The models are built on PowerModelsDistribution and JuMP and solved with Ipopt. The LV12_248 network comes from the Geth et al. (2025) CSIRO dataset of Australian low-voltage feeders (doi:10.25919/ghnz-bk28). The household loads are the Smart Grid Smart City profiles in `smartgridsmartcities.json` from CSIRO's RepresentativeLVNetworks repository, which is not redistributed here. Cable ratings are from Energex STNW3369, Release 5 (12 June 2026). The four-bus network's parameters and their sources are documented in the header of `data/4_Bus_Small.dss`.

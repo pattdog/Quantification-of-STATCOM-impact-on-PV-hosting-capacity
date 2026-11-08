@@ -78,7 +78,7 @@ using Pkg
 # a No_PV/ subfolder) then requires no edits.
 #
 #   PSCC_DIR    -- nearest ancestor containing core/variables.jl
-#   RPMD_ROOT   -- nearest ancestor containing both data/ and src/
+#   RPMD_ROOT   -- nearest ancestor containing data/
 #   THESIS_ROOT -- OUTERMOST ancestor with a Project.toml. Both
 #                  rosetta_distribution_opf.jl and thesis_STATCOM have one;
 #                  the outer is the environment that was originally
@@ -100,11 +100,11 @@ function _find_up(start::AbstractString, pred::Function; outermost::Bool=false, 
 end
 
 const PSCC_DIR = _find_up(SCRIPT_DIR, d -> isfile(joinpath(d, "core", "variables.jl")))
-const RPMD_ROOT = _find_up(SCRIPT_DIR, d -> isdir(joinpath(d, "data")) && isdir(joinpath(d, "src")))
+const RPMD_ROOT = _find_up(SCRIPT_DIR, d -> isdir(joinpath(d, "data")))
 const THESIS_ROOT = _find_up(SCRIPT_DIR, d -> isfile(joinpath(d, "Project.toml")); outermost=true)
 
 isnothing(PSCC_DIR)    && error("could not find core/variables.jl above $SCRIPT_DIR")
-isnothing(RPMD_ROOT)   && error("could not find a directory with both data/ and src/ above $SCRIPT_DIR")
+isnothing(RPMD_ROOT)   && error("could not find a data/ folder above $SCRIPT_DIR")
 isnothing(THESIS_ROOT) && error("could not find a Project.toml above $SCRIPT_DIR")
 
 const CORE_DIR = joinpath(PSCC_DIR, "core")
